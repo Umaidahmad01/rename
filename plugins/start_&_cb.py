@@ -2,7 +2,6 @@ import random
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-
 from helper.database import codeflixbots
 from config import *
 from config import Config
@@ -243,3 +242,85 @@ async def help_command(client, message):
             [InlineKeyboardButton('• ʜᴏᴍᴇ', callback_data='home')]
         ])
     )
+
+
+# /extraction command
+@Client.on_message(filters.command("extraction") & filters.private)
+async def extraction_command(client, message):
+    # Inline buttons banane ke liye
+    keyboard = [
+        [InlineKeyboardButton("Rename from Filename", callback_data="filename")],
+        [InlineKeyboardButton("Rename from Filecaption", callback_data="filecaption")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # User ko message bhejna
+    await message.reply_text(
+        "Choose how you want to rename the file:",
+        reply_markup=reply_markup
+    )
+
+# Inline button callback handler
+@Client.on_callback_query()
+async def handle_callback(client, callback_query):
+    choice = callback_query.data
+    user_id = callback_query.from_user.id
+
+    if choice == "filename":
+        await callback_query.message.edit_text("Please send the file, and I'll rename it using its filename.")
+        # Rename mode store karna
+        app.storage.set(user_id, "rename_mode", "filename")
+
+    elif choice == "filecaption":
+        await callback_query.message.edit_text("Please send the file, and I'll rename it using its caption.")
+        app.storage.set(user_id, "rename_mode", "filecaption")
+
+    await callback_query.answer()
+
+# File handler
+@Client.on_message(filters.document & filters.private)
+async def handle_file(client, message):
+    user_id = message.from_user.id
+    rename_mode = app.storage.get(user_id, "rename_mode")
+
+    if not rename_mode:
+        await message.reply_text("Please use /extraction first to choose a rename mode.")
+        return
+
+    file = message.document
+    new_name = ""
+
+    if rename_mode == "filename":
+        new_name = file.file_name
+        await message.reply_text(f"Renaming file using filename: {new_name}")
+
+    elif rename_mode == "filecaption":
+        caption = message.caption
+        if caption:
+            new_name = caption + "." + file.file_name.split('.')[-1]  # Extension retain karna
+            await message.reply_text(f"Renaming file using caption: {new_name}")
+        else:
+            new_name = file.file_name
+            await message.reply_text("No caption provided, using filename instead.")
+
+    # File download aur rename
+    file_path = await client.download_media(file)
+    renamed_file_path = f"downloads/{new_name}"
+
+    import os
+    os.rename(file_path, renamed_file_path)
+
+    # Renamed file upload karna
+    await client.send_document(
+        chat_id=message.chat.id,
+        document=renamed_file_path,
+        file_name=new_name
+    )
+
+    # Cleanup
+    os.remove(renamed_file_path)
+    app.storage.delete(user_id, "rename_mode")
+
+# Bot ko run karna
+if __name__ == "__main__":
+    app.run()
