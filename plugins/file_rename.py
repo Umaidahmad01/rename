@@ -16,9 +16,6 @@ from helper.utils import progress_for_pyrogram, humanbytes, convert
 from helper.database import codeflixbots
 from config import Config
 import telegram
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram import Updater, CommandHandler, CallbackQueryHandler
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -274,95 +271,3 @@ async def auto_rename_files(client, message):
         # Clean up files
         await cleanup_files(download_path, metadata_path, thumb_path)
         renaming_operations.pop(file_id, None)
-
-# Updater aur bot initialize karna
-updater = Updater(token=TOKEN, use_context=True)
-dispatcher = updater.dispatcher
-
-# /extraction command ke liye handler
-def extraction(update, context):
-    # Inline buttons banane ke liye keyboard
-    keyboard = [
-        [InlineKeyboardButton("Rename from Filename", callback_data='filename')],
-        [InlineKeyboardButton("Rename from Filecaption", callback_data='filecaption')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    # User ko message bhejna with inline buttons
-    context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="Choose how you want to rename the file:",
-        reply_markup=reply_markup
-    )
-
-# Inline button clicks ko handle karne ke liye
-def button(update, context):
-    query = update.callback_query
-    query.answer()  # Callback query ko acknowledge karna
-
-    choice = query.data  # User ne kya choose kiya (filename ya filecaption)
-    chat_id = query.message.chat_id
-
-    # Agar user ne filename choose kiya
-    if choice == 'filename':
-        context.bot.send_message(chat_id=chat_id, text="Please send the file, and I'll rename it using its filename.")
-        # Yahan aap file ka wait karne ke liye context.user_data mein store kar sakte hain
-        context.user_data['rename_mode'] = 'filename'
-
-    # Agar user ne filecaption choose kiya
-    elif choice == 'filecaption':
-        context.bot.send_message(chat_id=chat_id, text="Please send the file, and I'll rename it using its caption.")
-        context.user_data['rename_mode'] = 'filecaption'
-
-# File receive karne aur rename karne ke liye handler
-def handle_file(update, context):
-    if 'rename_mode' not in context.user_data:
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Please use /extraction first to choose a rename mode.")
-        return
-
-    file = update.message.document  # File object lena
-    if not file:
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Please send a file to rename.")
-        return
-
-    rename_mode = context.user_data['rename_mode']
-    new_name = ""
-
-    # Filename se rename karna
-    if rename_mode == 'filename':
-        new_name = file.file_name
-        context.bot.send_message(chat_id=update.effective_chat.id, text=f"Renaming file using filename: {new_name}")
-
-    # Filecaption se rename karna
-    elif rename_mode == 'filecaption':
-        caption = update.message.caption
-        if caption:
-            new_name = caption + "." + file.file_name.split('.')[-1]  # Extension retain karna
-            context.bot.send_message(chat_id=update.effective_chat.id, text=f"Renaming file using caption: {new_name}")
-        else:
-            context.bot.send_message(chat_id=update.effective_chat.id, text="No caption provided, using filename instead.")
-            new_name = file.file_name
-
-    # File ko download karke rename karke wapas bhejna
-    file_obj = context.bot.get_file(file.file_id)
-    file_path = file_obj.download(custom_path=f"downloads/{file.file_name}")
-    renamed_file_path = f"downloads/{new_name}"
-
-    import os
-    os.rename(file_path, renamed_file_path)
-
-    with open(renamed_file_path, 'rb') as renamed_file:
-        context.bot.send_document(chat_id=update.effective_chat.id, document=renamed_file, filename=new_name)
-
-    # Cleanup
-    os.remove(renamed_file_path)
-    del context.user_data['rename_mode']
-
-# Handlers ko dispatcher mein add karna
-dispatcher.add_handler(CommandHandler('extraction', extraction))
-dispatcher.add_handler(CallbackQueryHandler(button))
-dispatcher.add_handler(MessageHandler(Filters.document, handle_file))
-
-# Bot ko start karna
-updater.start_polling()
-updater.idle()
