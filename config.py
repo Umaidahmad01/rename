@@ -21,6 +21,7 @@ class Config(object):
     FORCE_SUB_CHANNELS = os.environ.get('FORCE_SUB_CHANNELS', 'animes_sub_society').split(',')
     LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "-1002078429106"))
     DUMP_CHANNEL = int(os.environ.get("DUMP_CHANNEL", "-1002200709110"))
+    OWNER_ID = int(os.environ.get("OWNER_ID", "5585016974"))
 
     # wes response configuration     
     WEBHOOK = bool(os.environ.get("WEBHOOK", "True"))
