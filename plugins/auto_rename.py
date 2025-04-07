@@ -7,7 +7,6 @@ import subprocess
 import re
 import json
 
-    )
 # Supported formats
 SUPPORTED_FORMATS = ["mkv", "mp4", "avi", "mov", "pdf"]
 
