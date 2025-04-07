@@ -1,6 +1,6 @@
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from helper.Database import Database
+from helper.database import database
 from config import TOKEN, OWNER_ID, ADMIN_IDS
 
 # Client initialize with bot token
