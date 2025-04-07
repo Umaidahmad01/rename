@@ -1,71 +1,156 @@
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from helper.database import codeflixbots
+import subprocess
 
 # Supported formats
-SUPPORTED_FORMATS = ["mkv", "mp4", "avi", "mov"]
+SUPPORTED_FORMATS = ["mkv", "mp4", "avi", "mov", "pdf"]
 
-# /autorename command
-@client.on_message(filters.command("autorename") & filters.private)
+# Resolution mapping
+RESOLUTION_MAP = {
+    "hdrip": "2160p",
+    "2160p": "2160p",
+    "fhd": "1080p",
+    "1080p": "1080p",
+    "hd": "720p",
+    "720p": "720p",
+    "sd": "480p",
+    "480p": "480p"
+}
+
+# FFmpeg resolution settings
+RESOLUTION_SETTINGS = {
+    "2160p": "3840:2160",
+    "1080p": "1920:1080",
+    "720p": "1280:720",
+    "480p": "854:480"
+}
+
+# /autorename command with Client decorator
+@Client.on_message(app, filters.command("autorename") & filters.private)
 async def autorename_command(client, message):
-    if len(message.command) < 3:
-        await message.reply_text("Usage: /autorename <new_name> <format>\nExample: /autorename MyVideo mp4")
+    if len(message.command) < 2:
+        await message.reply_text("Usage: /autorename <pattern>\nExample: /autorename MySeries S{season} E{episode} {quality}.mkv")
         return
 
-    new_name = message.command[1]  # User-specified name
-    file_format = message.command[2].lower()  # User-specified format
+    pattern = " ".join(message.command[1:])  # Full pattern lena
+    user_id = message.from_user.id
 
-    if file_format not in SUPPORTED_FORMATS:
-        await message.reply_text(f"Unsupported format! Supported formats: {', '.join(SUPPORTED_FORMATS)}")
-        return
+    # Check if pattern has variables
+    if "{season}" in pattern or "{episode}" in pattern or "{quality}" in pattern:
+        app.storage.set(user_id, "pattern", pattern)
+        await message.reply_text("Please provide the season number (e.g., 01 for S01):")
+        app.storage.set(user_id, "state", "awaiting_season")
+    else:
+        await message.reply_text("Pattern must include {season}, {episode}, or {quality} variables!")
 
-    # Store the rename details in storage
-    client.storage.set(message.from_user.id, "new_name", new_name)
-    client.storage.set(message.from_user.id, "file_format", file_format)
+# Handle user input for season, episode, and file
+@Client.on_message(app, filters.text & filters.private)
+async def handle_text_input(client, message):
+    user_id = message.from_user.id
+    state = app.storage.get(user_id, "state")
 
-    await message.reply_text(f"Please send the file to rename as '{new_name}.{file_format}'.")
+    if state == "awaiting_season":
+        season = message.text.strip()
+        if not re.match(r"^\d+$", season):
+            await message.reply_text("Please enter a valid season number (e.g., 01):")
+            return
+        app.storage.set(user_id, "season", f"{int(season):02d}")  # 2-digit format (e.g., 01)
+        app.storage.set(user_id, "state", "awaiting_episode")
+        await message.reply_text("Please provide the episode number (e.g., 01 for E01):")
 
-# File handler
-@client.on_message(filters.document | filters.video & filters.private)
+    elif state == "awaiting_episode":
+        episode = message.text.strip()
+        if not re.match(r"^\d+$", episode):
+            await message.reply_text("Please enter a valid episode number (e.g., 01):")
+            return
+        app.storage.set(user_id, "episode", f"{int(episode):02d}")  # 2-digit format (e.g., 01)
+        app.storage.set(user_id, "state", "awaiting_file")
+        pattern = app.storage.get(user_id, "pattern")
+        await message.reply_text(f"Please send the file to rename using pattern: {pattern}")
+
+# File handler with Client decorator
+@Client.on_message(app, (filters.document | filters.video) & filters.private)
 async def handle_file(client, message):
     user_id = message.from_user.id
-    new_name = app.storage.get(user_id, "new_name")
-    file_format = app.storage.get(user_id, "file_format")
+    pattern = app.storage.get(user_id, "pattern")
+    season = app.storage.get(user_id, "season")
+    episode = app.storage.get(user_id, "episode")
+    state = app.storage.get(user_id, "state")
 
-    if not new_name or not file_format:
-        await message.reply_text("Please use /autorename <new_name> <format> first.")
+    if state != "awaiting_file" or not pattern:
+        await message.reply_text("Please use /autorename <pattern> first and provide season/episode!")
         return
 
     # File download karna
     file = message.document or message.video
     original_file_path = await client.download_media(file, file_name=f"downloads/original_{file.file_name}")
 
-    # New file path with specified name and format
-    new_file_path = f"downloads/{new_name}.{file_format}"
+    # Pattern se new name generate karna
+    new_name = pattern
+    if "{season}" in new_name:
+        new_name = new_name.replace("{season}", season)
+    if "{episode}" in new_name:
+        new_name = new_name.replace("{episode}", episode)
+
+    # Quality detection
+    quality = None
+    for keyword, res in RESOLUTION_MAP.items():
+        if keyword in new_name.lower():
+            quality = res
+            break
+    if "{quality}" in new_name and quality:
+        new_name = new_name.replace("{quality}", quality)
+    elif "{quality}" in new_name:
+        new_name = new_name.replace("{quality}", "1080p")  # Default quality agar na mile
+
+    # File format extract karna from pattern
+    file_format = new_name.split('.')[-1].lower() if '.' in new_name else "mp4"
+    new_file_path = f"downloads/{new_name}"
 
     # Ensure downloads directory exists
     os.makedirs("downloads", exist_ok=True)
 
-    try:
-        # FFmpeg command to convert file
-        subprocess.run([
-            "ffmpeg", "-i", original_file_path, "-c:v", "copy", "-c:a", "copy", 
-            "-y", new_file_path
-        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Check if file is already in the desired format
+    original_extension = file.file_name.split('.')[-1].lower()
 
-        # Check if conversion successful
-        if os.path.exists(new_file_path):
-            await client.send_document(
-                chat_id=message.chat.id,
-                document=new_file_path,
-                file_name=f"{new_name}.{file_format}",
-                caption=f"Renamed and converted to {file_format}"
-            )
-        else:
-            await message.reply_text("Conversion failed. Please try again.")
+    if file_format == "pdf" or (original_extension == file_format and not quality):
+        # Agar PDF ya same format hai aur quality change nahi karna
+        os.rename(original_file_path, new_file_path)
+        await message.reply_text(f"File renamed to: {new_name}")
+    else:
+        # Agar format ya quality change karna hai
+        try:
+            ffmpeg_cmd = ["ffmpeg", "-i", original_file_path]
+            
+            if quality:
+                # Resolution set karna
+                res_value = RESOLUTION_SETTINGS[quality]
+                ffmpeg_cmd.extend(["-vf", f"scale={res_value}", "-c:a", "copy"])
+            else:
+                ffmpeg_cmd.extend(["-c:v", "copy", "-c:a", "copy"])
 
-    except subprocess.CalledProcessError as e:
-        await message.reply_text(f"Error during conversion: {e.stderr.decode()}")
+            ffmpeg_cmd.extend(["-y", new_file_path])
+            subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            if not os.path.exists(new_file_path):
+                await message.reply_text("Conversion failed. Please try again.")
+                return
+            await message.reply_text(f"File renamed and converted to: {new_name}" + 
+                                    (f" (Resolution: {quality})" if quality else ""))
+        except subprocess.CalledProcessError as e:
+            await message.reply_text(f"Error during conversion: {e.stderr.decode()}")
+            if os.path.exists(original_file_path):
+                os.remove(original_file_path)
+            return
+
+    # Renamed file upload karna
+    await client.send_document(
+        chat_id=message.chat.id,
+        document=new_file_path,
+        file_name=new_name,
+        caption=f"Renamed to {new_name}" + (f" (Resolution: {quality})" if quality else "")
+    )
 
     # Cleanup
     if os.path.exists(original_file_path):
@@ -74,11 +159,11 @@ async def handle_file(client, message):
         os.remove(new_file_path)
 
     # Clear storage
-    client.storage.delete(user_id, "new_name")
-    client.storage.delete(user_id, "file_format")
+    app.storage.delete(user_id, "pattern")
+    app.storage.delete(user_id, "season")
+    app.storage.delete(user_id, "episode")
+    app.storage.delete(user_id, "state")
     
-    format_template = command_parts[1].strip()
-
     # Save the format template in the database
     await codeflixbots.set_format_template(user_id, format_template)
 
