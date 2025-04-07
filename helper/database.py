@@ -2,7 +2,7 @@ import motor.motor_asyncio, datetime, pytz
 from config import Config
 import logging  # Added for logging errors and important information
 from .utils import send_log
-
+from pymongo import MongoClient
 
 class Database:
     def __init__(self, uri, database_name):
@@ -184,3 +184,89 @@ class Database:
 
 
 codeflixbots = Database(Config.DB_URL, Config.DB_NAME)
+
+
+
+class Database:
+    def __init__(self, mongo_uri="mongodb://localhost:27017/", db_name="telegram_bot"):
+        self.client = MongoClient(mongo_uri)
+        self.db = self.client[db_name]
+        self.tokens_collection = self.db["tokens"]
+        self.settings_collection = self.db["settings"]  # Reward settings ke liye naya collection
+
+    # Token info get karne ke liye
+    def get_token_info(self, chat_id):
+        token_data = self.tokens_collection.find_one({"chat_id": chat_id})
+        if token_data:
+            status = "ON" if token_data.get("status", False) else "OFF"
+            current_token = token_data.get("token", "Koi token set nahi hai")
+            user_tokens = token_data.get("user_tokens", 0)  # User ke tokens
+            return {
+                "status": status,
+                "token": current_token,
+                "user_tokens": user_tokens,
+                "api": "https://api.example.com",
+                "site": "https://example.com"
+            }
+        return {
+            "status": "OFF",
+            "token": "Koi token set nahi hai",
+            "user_tokens": 0,
+            "api": "https://api.example.com",
+            "site": "https://example.com"
+        }
+
+    # Token set ya update karne ke liye
+    def set_token(self, chat_id, token):
+        self.tokens_collection.update_one(
+            {"chat_id": chat_id},
+            {"$set": {"token": token, "status": True}},
+            upsert=True
+        )
+
+    # Token ON karne ke liye
+    def on_token(self, chat_id):
+        self.tokens_collection.update_one(
+            {"chat_id": chat_id},
+            {"$set": {"status": True}},
+            upsert=True
+        )
+
+    # Token OFF karne ke liye
+    def off_token(self, chat_id):
+        self.tokens_collection.update_one(
+            {"chat_id": chat_id},
+            {"$set": {"status": False}},
+            upsert=True
+        )
+
+    # Token change karne ke liye
+    def change_token(self, chat_id, new_token):
+        self.set_token(chat_id, new_token)
+
+    # User ko token dene ke liye
+    def give_token(self, chat_id, amount):
+        self.tokens_collection.update_one(
+            {"chat_id": chat_id},
+            {"$inc": {"user_tokens": amount}},  # Tokens increment karo
+            upsert=True
+        )
+
+    # Reward amount set karne ke liye
+    def set_reward(self, amount):
+        self.settings_collection.update_one(
+            {"key": "reward_amount"},
+            {"$set": {"value": amount}},
+            upsert=True
+        )
+
+    # Reward amount get karne ke liye
+    def get_reward(self):
+        reward_data = self.settings_collection.find_one({"key": "reward_amount"})
+        return reward_data["value"] if reward_data else 10  # Default 10 tokens
+
+    # Solve karne pe reward dene ke liye (example function)
+    def reward_user(self, chat_id):
+        reward_amount = self.get_reward()
+        self.give_token(chat_id, reward_amount)
+        return reward_amount
