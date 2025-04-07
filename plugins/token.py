@@ -32,7 +32,7 @@ async def start(client, message):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await message.reply(f"Welcome to Token Bot!\n\n{text}", reply_markup hydro_markup)
+    await message.reply("Welcome to Token Bot!\n\n{text}", "reply_markup hydro_markup")
 
 # Button handler
 @client.on_callback_query()
