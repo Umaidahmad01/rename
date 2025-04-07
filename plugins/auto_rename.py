@@ -7,6 +7,7 @@ import subprocess
 import re
 import json
 
+
 # Supported formats
 SUPPORTED_FORMATS = ["mkv", "mp4", "avi", "mov", "pdf"]
 
@@ -30,32 +31,32 @@ RESOLUTION_SETTINGS = {
     "480p": "854:480"
 }
 
-# Helper functions for FileStorage
-def get_storage_data(client, user_id, key, default=None):
-    storage_file = client.storage.file_name  # Get the storage file path
-    if os.path.exists(storage_file):
-        with open(storage_file, 'r') as f:
+# Fixed storage file path
+STORAGE_FILE = "storage.json"
+
+# Helper functions for manual JSON storage
+def get_storage_data(user_id, key, default=None):
+    if os.path.exists(STORAGE_FILE):
+        with open(STORAGE_FILE, 'r') as f:
             data = json.load(f)
             return data.get(f"{user_id}_{key}", default)
     return default
 
-def set_storage_data(client, user_id, key, value):
-    storage_file = client.storage.file_name
+def set_storage_data(user_id, key, value):
     data = {}
-    if os.path.exists(storage_file):
-        with open(storage_file, 'r') as f:
+    if os.path.exists(STORAGE_FILE):
+        with open(STORAGE_FILE, 'r') as f:
             data = json.load(f)
     data[f"{user_id}_{key}"] = value
-    with open(storage_file, 'w') as f:
+    with open(STORAGE_FILE, 'w') as f:
         json.dump(data, f)
 
-def delete_storage_data(client, user_id, key):
-    storage_file = client.storage.file_name
-    if os.path.exists(storage_file):
-        with open(storage_file, 'r') as f:
+def delete_storage_data(user_id, key):
+    if os.path.exists(STORAGE_FILE):
+        with open(STORAGE_FILE, 'r') as f:
             data = json.load(f)
         data.pop(f"{user_id}_{key}", None)
-        with open(storage_file, 'w') as f:
+        with open(STORAGE_FILE, 'w') as f:
             json.dump(data, f)
 
 # /autorename command
@@ -65,13 +66,13 @@ async def autorename_command(client, message):
         await message.reply_text("Usage: /autorename <pattern>\nExample: /autorename MySeries S{season} E{episode} {quality}.mkv")
         return
 
-    pattern = " ".join(message.command[1:])  # Full pattern lena
+    pattern = " ".join(message.command[1:])
     user_id = message.from_user.id
 
     if "{season}" in pattern or "{episode}" in pattern or "{quality}" in pattern:
-        set_storage_data(client, user_id, "pattern", pattern)
+        set_storage_data(user_id, "pattern", pattern)
         await message.reply_text("Please provide the season number (e.g., 01 for S01):")
-        set_storage_data(client, user_id, "state", "awaiting_season")
+        set_storage_data(user_id, "state", "awaiting_season")
     else:
         await message.reply_text("Pattern must include {season}, {episode}, or {quality} variables!")
 
@@ -79,15 +80,15 @@ async def autorename_command(client, message):
 @Client.on_message(filters.text & filters.private)
 async def handle_text_input(client, message):
     user_id = message.from_user.id
-    state = get_storage_data(client, user_id, "state")
+    state = get_storage_data(user_id, "state")
 
     if state == "awaiting_season":
         season = message.text.strip()
         if not re.match(r"^\d+$", season):
             await message.reply_text("Please enter a valid season number (e.g., 01):")
             return
-        set_storage_data(client, user_id, "season", f"{int(season):02d}")  # 2-digit format
-        set_storage_data(client, user_id, "state", "awaiting_episode")
+        set_storage_data(user_id, "season", f"{int(season):02d}")
+        set_storage_data(user_id, "state", "awaiting_episode")
         await message.reply_text("Please provide the episode number (e.g., 01 for E01):")
 
     elif state == "awaiting_episode":
@@ -95,36 +96,33 @@ async def handle_text_input(client, message):
         if not re.match(r"^\d+$", episode):
             await message.reply_text("Please enter a valid episode number (e.g., 01):")
             return
-        set_storage_data(client, user_id, "episode", f"{int(episode):02d}")  # 2-digit format
-        set_storage_data(client, user_id, "state", "awaiting_file")
-        pattern = get_storage_data(client, user_id, "pattern")
+        set_storage_data(user_id, "episode", f"{int(episode):02d}")
+        set_storage_data(user_id, "state", "awaiting_file")
+        pattern = get_storage_data(user_id, "pattern")
         await message.reply_text(f"Please send the file to rename using pattern: {pattern}")
 
 # File handler
 @Client.on_message((filters.document | filters.video) & filters.private)
 async def handle_file(client, message):
     user_id = message.from_user.id
-    pattern = get_storage_data(client, user_id, "pattern")
-    season = get_storage_data(client, user_id, "season")
-    episode = get_storage_data(client, user_id, "episode")
-    state = get_storage_data(client, user_id, "state")
+    pattern = get_storage_data(user_id, "pattern")
+    season = get_storage_data(user_id, "season")
+    episode = get_storage_data(user_id, "episode")
+    state = get_storage_data(user_id, "state")
 
     if state != "awaiting_file" or not pattern:
         await message.reply_text("Please use /autorename <pattern> first and provide season/episode!")
         return
 
-    # File download karna
     file = message.document or message.video
     original_file_path = await client.download_media(file, file_name=f"downloads/original_{file.file_name}")
 
-    # Pattern se new name generate karna
     new_name = pattern
     if "{season}" in new_name:
         new_name = new_name.replace("{season}", season)
     if "{episode}" in new_name:
         new_name = new_name.replace("{episode}", episode)
 
-    # Quality detection
     quality = None
     for keyword, res in RESOLUTION_MAP.items():
         if keyword in new_name.lower():
@@ -133,16 +131,13 @@ async def handle_file(client, message):
     if "{quality}" in new_name and quality:
         new_name = new_name.replace("{quality}", quality)
     elif "{quality}" in new_name:
-        new_name = new_name.replace("{quality}", "1080p")  # Default quality
+        new_name = new_name.replace("{quality}", "1080p")
 
-    # File format extract karna from pattern
     file_format = new_name.split('.')[-1].lower() if '.' in new_name else "mp4"
     new_file_path = f"downloads/{new_name}"
 
-    # Ensure downloads directory exists
     os.makedirs("downloads", exist_ok=True)
 
-    # Check if file is already in the desired format
     original_extension = file.file_name.split('.')[-1].lower()
 
     if file_format == "pdf" or (original_extension == file_format and not quality):
@@ -170,7 +165,6 @@ async def handle_file(client, message):
                 os.remove(original_file_path)
             return
 
-    # Renamed file upload karna
     await client.send_document(
         chat_id=message.chat.id,
         document=new_file_path,
@@ -178,17 +172,22 @@ async def handle_file(client, message):
         caption=f"Renamed to {new_name}" + (f" (Resolution: {quality})" if quality else "")
     )
 
-    # Cleanup
     if os.path.exists(original_file_path):
         os.remove(original_file_path)
     if os.path.exists(new_file_path):
         os.remove(new_file_path)
 
-    # Clear storage
-    delete_storage_data(client, user_id, "pattern")
-    delete_storage_data(client, user_id, "season")
-    delete_storage_data(client, user_id, "episode")
-    delete_storage_data(client, user_id, "state")
+    delete_storage_data(user_id, "pattern")
+    delete_storage_data(user_id, "season")
+    delete_storage_data(user_id, "episode")
+    delete_storage_data(user_id, "state")
+
+# Callback handler (if exists)
+@Client.on_callback_query()
+async def handle_media_selection(client, callback_query: CallbackQuery):
+    await callback_query.message.reply_text(f"Selected: {callback_query.data}")
+    await callback_query.answer()
+    
     # Send confirmation message with the template in monospaced font
     await message.reply_text(
         f"**🌟 Fantastic! You're ready to auto-rename your files.**\n\n"
