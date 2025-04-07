@@ -1,9 +1,14 @@
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+#### LAND UNDER LELE MC####
 from helper.database import codeflixbots
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+import os
 import subprocess
+import re
+import json
 
- # Supported formats
+    )
+# Supported formats
 SUPPORTED_FORMATS = ["mkv", "mp4", "avi", "mov", "pdf"]
 
 # Resolution mapping
@@ -26,6 +31,34 @@ RESOLUTION_SETTINGS = {
     "480p": "854:480"
 }
 
+# Helper functions for FileStorage
+def get_storage_data(client, user_id, key, default=None):
+    storage_file = client.storage.file_name  # Get the storage file path
+    if os.path.exists(storage_file):
+        with open(storage_file, 'r') as f:
+            data = json.load(f)
+            return data.get(f"{user_id}_{key}", default)
+    return default
+
+def set_storage_data(client, user_id, key, value):
+    storage_file = client.storage.file_name
+    data = {}
+    if os.path.exists(storage_file):
+        with open(storage_file, 'r') as f:
+            data = json.load(f)
+    data[f"{user_id}_{key}"] = value
+    with open(storage_file, 'w') as f:
+        json.dump(data, f)
+
+def delete_storage_data(client, user_id, key):
+    storage_file = client.storage.file_name
+    if os.path.exists(storage_file):
+        with open(storage_file, 'r') as f:
+            data = json.load(f)
+        data.pop(f"{user_id}_{key}", None)
+        with open(storage_file, 'w') as f:
+            json.dump(data, f)
+
 # /autorename command
 @Client.on_message(filters.command("autorename") & filters.private)
 async def autorename_command(client, message):
@@ -36,11 +69,10 @@ async def autorename_command(client, message):
     pattern = " ".join(message.command[1:])  # Full pattern lena
     user_id = message.from_user.id
 
-    # Check if pattern has variables
     if "{season}" in pattern or "{episode}" in pattern or "{quality}" in pattern:
-        client.storage.set(user_id, "pattern", pattern)
+        set_storage_data(client, user_id, "pattern", pattern)
         await message.reply_text("Please provide the season number (e.g., 01 for S01):")
-        client.storage.set(user_id, "state", "awaiting_season")
+        set_storage_data(client, user_id, "state", "awaiting_season")
     else:
         await message.reply_text("Pattern must include {season}, {episode}, or {quality} variables!")
 
@@ -48,15 +80,15 @@ async def autorename_command(client, message):
 @Client.on_message(filters.text & filters.private)
 async def handle_text_input(client, message):
     user_id = message.from_user.id
-    state = client.storage.get(user_id, "state")
+    state = get_storage_data(client, user_id, "state")
 
     if state == "awaiting_season":
         season = message.text.strip()
         if not re.match(r"^\d+$", season):
             await message.reply_text("Please enter a valid season number (e.g., 01):")
             return
-        client.storage.set(user_id, "season", f"{int(season):02d}")  # 2-digit format (e.g., 01)
-        client.storage.set(user_id, "state", "awaiting_episode")
+        set_storage_data(client, user_id, "season", f"{int(season):02d}")  # 2-digit format
+        set_storage_data(client, user_id, "state", "awaiting_episode")
         await message.reply_text("Please provide the episode number (e.g., 01 for E01):")
 
     elif state == "awaiting_episode":
@@ -64,19 +96,19 @@ async def handle_text_input(client, message):
         if not re.match(r"^\d+$", episode):
             await message.reply_text("Please enter a valid episode number (e.g., 01):")
             return
-        client.storage.set(user_id, "episode", f"{int(episode):02d}")  # 2-digit format (e.g., 01)
-        client.storage.set(user_id, "state", "awaiting_file")
-        pattern = client.storage.get(user_id, "pattern")
+        set_storage_data(client, user_id, "episode", f"{int(episode):02d}")  # 2-digit format
+        set_storage_data(client, user_id, "state", "awaiting_file")
+        pattern = get_storage_data(client, user_id, "pattern")
         await message.reply_text(f"Please send the file to rename using pattern: {pattern}")
 
 # File handler
 @Client.on_message((filters.document | filters.video) & filters.private)
 async def handle_file(client, message):
     user_id = message.from_user.id
-    pattern = client.storage.get(user_id, "pattern")
-    season = client.storage.get(user_id, "season")
-    episode = client.storage.get(user_id, "episode")
-    state = client.storage.get(user_id, "state")
+    pattern = get_storage_data(client, user_id, "pattern")
+    season = get_storage_data(client, user_id, "season")
+    episode = get_storage_data(client, user_id, "episode")
+    state = get_storage_data(client, user_id, "state")
 
     if state != "awaiting_file" or not pattern:
         await message.reply_text("Please use /autorename <pattern> first and provide season/episode!")
@@ -102,7 +134,7 @@ async def handle_file(client, message):
     if "{quality}" in new_name and quality:
         new_name = new_name.replace("{quality}", quality)
     elif "{quality}" in new_name:
-        new_name = new_name.replace("{quality}", "1080p")  # Default quality agar na mile
+        new_name = new_name.replace("{quality}", "1080p")  # Default quality
 
     # File format extract karna from pattern
     file_format = new_name.split('.')[-1].lower() if '.' in new_name else "mp4"
@@ -115,21 +147,16 @@ async def handle_file(client, message):
     original_extension = file.file_name.split('.')[-1].lower()
 
     if file_format == "pdf" or (original_extension == file_format and not quality):
-        # Agar PDF ya same format hai aur quality change nahi karna
         os.rename(original_file_path, new_file_path)
         await message.reply_text(f"File renamed to: {new_name}")
     else:
-        # Agar format ya quality change karna hai
         try:
             ffmpeg_cmd = ["ffmpeg", "-i", original_file_path]
-            
             if quality:
-                # Resolution set karna
                 res_value = RESOLUTION_SETTINGS[quality]
                 ffmpeg_cmd.extend(["-vf", f"scale={res_value}", "-c:a", "copy"])
             else:
                 ffmpeg_cmd.extend(["-c:v", "copy", "-c:a", "copy"])
-
             ffmpeg_cmd.extend(["-y", new_file_path])
             subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -159,12 +186,10 @@ async def handle_file(client, message):
         os.remove(new_file_path)
 
     # Clear storage
-    client.storage.delete(user_id, "pattern")
-    client.storage.delete(user_id, "season")
-    client.storage.delete(user_id, "episode")
-    client.storage.delete(user_id, "state")# Save the format template in the database
-    await codeflixbots.set_format_template(user_id, format_template)
-
+    delete_storage_data(client, user_id, "pattern")
+    delete_storage_data(client, user_id, "season")
+    delete_storage_data(client, user_id, "episode")
+    delete_storage_data(client, user_id, "state")
     # Send confirmation message with the template in monospaced font
     await message.reply_text(
         f"**🌟 Fantastic! You're ready to auto-rename your files.**\n\n"
