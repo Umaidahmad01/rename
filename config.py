@@ -1,7 +1,7 @@
 import re, os, time
 from os import environ, getenv
 id_pattern = re.compile(r'^.\d+$') 
-
+use_qr
 
 class Config(object):
     # pyro client config
