@@ -2,20 +2,81 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from helper.database import codeflixbots
 
-@Client.on_message(filters.private & filters.command("autorename"))
-async def auto_rename_command(client, message):
-    user_id = message.from_user.id
+# Supported formats
+SUPPORTED_FORMATS = ["mkv", "mp4", "avi", "mov"]
 
-    # Extract and validate the format from the command
-    command_parts = message.text.split(maxsplit=1)
-    if len(command_parts) < 2 or not command_parts[1].strip():
-        await message.reply_text(
-            "**Please provide a new name after the command /autorename**\n\n"
-            "Here's how to use it:\n"
-            "**Example format:** `/autorename Overflow [S{season}E{episode}] - [Dual] {quality}`"
-        )
+# /autorename command
+@client.on_message(filters.command("autorename") & filters.private)
+async def autorename_command(client, message):
+    if len(message.command) < 3:
+        await message.reply_text("Usage: /autorename <new_name> <format>\nExample: /autorename MyVideo mp4")
         return
 
+    new_name = message.command[1]  # User-specified name
+    file_format = message.command[2].lower()  # User-specified format
+
+    if file_format not in SUPPORTED_FORMATS:
+        await message.reply_text(f"Unsupported format! Supported formats: {', '.join(SUPPORTED_FORMATS)}")
+        return
+
+    # Store the rename details in storage
+    client.storage.set(message.from_user.id, "new_name", new_name)
+    client.storage.set(message.from_user.id, "file_format", file_format)
+
+    await message.reply_text(f"Please send the file to rename as '{new_name}.{file_format}'.")
+
+# File handler
+@client.on_message(filters.document | filters.video & filters.private)
+async def handle_file(client, message):
+    user_id = message.from_user.id
+    new_name = app.storage.get(user_id, "new_name")
+    file_format = app.storage.get(user_id, "file_format")
+
+    if not new_name or not file_format:
+        await message.reply_text("Please use /autorename <new_name> <format> first.")
+        return
+
+    # File download karna
+    file = message.document or message.video
+    original_file_path = await client.download_media(file, file_name=f"downloads/original_{file.file_name}")
+
+    # New file path with specified name and format
+    new_file_path = f"downloads/{new_name}.{file_format}"
+
+    # Ensure downloads directory exists
+    os.makedirs("downloads", exist_ok=True)
+
+    try:
+        # FFmpeg command to convert file
+        subprocess.run([
+            "ffmpeg", "-i", original_file_path, "-c:v", "copy", "-c:a", "copy", 
+            "-y", new_file_path
+        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        # Check if conversion successful
+        if os.path.exists(new_file_path):
+            await client.send_document(
+                chat_id=message.chat.id,
+                document=new_file_path,
+                file_name=f"{new_name}.{file_format}",
+                caption=f"Renamed and converted to {file_format}"
+            )
+        else:
+            await message.reply_text("Conversion failed. Please try again.")
+
+    except subprocess.CalledProcessError as e:
+        await message.reply_text(f"Error during conversion: {e.stderr.decode()}")
+
+    # Cleanup
+    if os.path.exists(original_file_path):
+        os.remove(original_file_path)
+    if os.path.exists(new_file_path):
+        os.remove(new_file_path)
+
+    # Clear storage
+    client.storage.delete(user_id, "new_name")
+    client.storage.delete(user_id, "file_format")
+    
     format_template = command_parts[1].strip()
 
     # Save the format template in the database
