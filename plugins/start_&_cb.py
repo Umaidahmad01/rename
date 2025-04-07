@@ -244,8 +244,8 @@ async def help_command(client, message):
     )
 
 
-# /extraction command
-@app.on_message(filters.command("extraction") & filters.private)
+# /extraction command with Client decorator
+@Client.on_message(app, filters.command("extraction") & filters.private)
 async def extraction_command(client, message):
     # Inline buttons banane ke liye
     keyboard = [
@@ -261,7 +261,7 @@ async def extraction_command(client, message):
     )
 
 # Inline button callback handler
-@app.on_callback_query()
+@Client.on_callback_query(app)
 async def handle_callback(client, callback_query):
     choice = callback_query.data
     user_id = callback_query.from_user.id
@@ -299,7 +299,7 @@ async def handle_callback(client, callback_query):
     await callback_query.answer()
 
 # File handler
-@app.on_message(filters.document & filters.private)
+@Client.on_message(app, filters.document & filters.private)
 async def handle_file(client, message):
     user_id = message.from_user.id
     rename_mode = app.storage.get(user_id, "rename_mode")
@@ -328,7 +328,6 @@ async def handle_file(client, message):
     file_path = await client.download_media(file)
     renamed_file_path = f"downloads/{new_name}"
 
-    import os
     os.makedirs("downloads", exist_ok=True)  # Downloads folder banane ke liye
     os.rename(file_path, renamed_file_path)
 
