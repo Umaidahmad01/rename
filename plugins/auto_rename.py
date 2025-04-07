@@ -3,7 +3,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQ
 from helper.database import codeflixbots
 import subprocess
 
-# Supported formats
+ # Supported formats
 SUPPORTED_FORMATS = ["mkv", "mp4", "avi", "mov", "pdf"]
 
 # Resolution mapping
@@ -26,8 +26,8 @@ RESOLUTION_SETTINGS = {
     "480p": "854:480"
 }
 
-# /autorename command with Client decorator
-@Client.on_message(app, filters.command("autorename") & filters.private)
+# /autorename command
+@Client.on_message(filters.command("autorename") & filters.private)
 async def autorename_command(client, message):
     if len(message.command) < 2:
         await message.reply_text("Usage: /autorename <pattern>\nExample: /autorename MySeries S{season} E{episode} {quality}.mkv")
@@ -38,25 +38,25 @@ async def autorename_command(client, message):
 
     # Check if pattern has variables
     if "{season}" in pattern or "{episode}" in pattern or "{quality}" in pattern:
-        app.storage.set(user_id, "pattern", pattern)
+        client.storage.set(user_id, "pattern", pattern)
         await message.reply_text("Please provide the season number (e.g., 01 for S01):")
-        app.storage.set(user_id, "state", "awaiting_season")
+        client.storage.set(user_id, "state", "awaiting_season")
     else:
         await message.reply_text("Pattern must include {season}, {episode}, or {quality} variables!")
 
 # Handle user input for season, episode, and file
-@Client.on_message(app, filters.text & filters.private)
+@Client.on_message(filters.text & filters.private)
 async def handle_text_input(client, message):
     user_id = message.from_user.id
-    state = app.storage.get(user_id, "state")
+    state = client.storage.get(user_id, "state")
 
     if state == "awaiting_season":
         season = message.text.strip()
         if not re.match(r"^\d+$", season):
             await message.reply_text("Please enter a valid season number (e.g., 01):")
             return
-        app.storage.set(user_id, "season", f"{int(season):02d}")  # 2-digit format (e.g., 01)
-        app.storage.set(user_id, "state", "awaiting_episode")
+        client.storage.set(user_id, "season", f"{int(season):02d}")  # 2-digit format (e.g., 01)
+        client.storage.set(user_id, "state", "awaiting_episode")
         await message.reply_text("Please provide the episode number (e.g., 01 for E01):")
 
     elif state == "awaiting_episode":
@@ -64,19 +64,19 @@ async def handle_text_input(client, message):
         if not re.match(r"^\d+$", episode):
             await message.reply_text("Please enter a valid episode number (e.g., 01):")
             return
-        app.storage.set(user_id, "episode", f"{int(episode):02d}")  # 2-digit format (e.g., 01)
-        app.storage.set(user_id, "state", "awaiting_file")
-        pattern = app.storage.get(user_id, "pattern")
+        client.storage.set(user_id, "episode", f"{int(episode):02d}")  # 2-digit format (e.g., 01)
+        client.storage.set(user_id, "state", "awaiting_file")
+        pattern = client.storage.get(user_id, "pattern")
         await message.reply_text(f"Please send the file to rename using pattern: {pattern}")
 
-# File handler with Client decorator
-@Client.on_message(app, (filters.document | filters.video) & filters.private)
+# File handler
+@Client.on_message((filters.document | filters.video) & filters.private)
 async def handle_file(client, message):
     user_id = message.from_user.id
-    pattern = app.storage.get(user_id, "pattern")
-    season = app.storage.get(user_id, "season")
-    episode = app.storage.get(user_id, "episode")
-    state = app.storage.get(user_id, "state")
+    pattern = client.storage.get(user_id, "pattern")
+    season = client.storage.get(user_id, "season")
+    episode = client.storage.get(user_id, "episode")
+    state = client.storage.get(user_id, "state")
 
     if state != "awaiting_file" or not pattern:
         await message.reply_text("Please use /autorename <pattern> first and provide season/episode!")
@@ -159,12 +159,10 @@ async def handle_file(client, message):
         os.remove(new_file_path)
 
     # Clear storage
-    app.storage.delete(user_id, "pattern")
-    app.storage.delete(user_id, "season")
-    app.storage.delete(user_id, "episode")
-    app.storage.delete(user_id, "state")
-    
-    # Save the format template in the database
+    client.storage.delete(user_id, "pattern")
+    client.storage.delete(user_id, "season")
+    client.storage.delete(user_id, "episode")
+    client.storage.delete(user_id, "state")# Save the format template in the database
     await codeflixbots.set_format_template(user_id, format_template)
 
     # Send confirmation message with the template in monospaced font
