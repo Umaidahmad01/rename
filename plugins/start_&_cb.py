@@ -244,8 +244,8 @@ async def help_command(client, message):
     )
 
 
-# /extraction command with Client decorator
-@Client.on_message(app, filters.command("extraction") & filters.private)
+# /extraction command
+@Client.on_message(filters.command("extraction") & filters.private)
 async def extraction_command(client, message):
     # Inline buttons banane ke liye
     keyboard = [
@@ -261,7 +261,7 @@ async def extraction_command(client, message):
     )
 
 # Inline button callback handler
-@Client.on_callback_query(app)
+@Client.on_callback_query()
 async def handle_callback(client, callback_query):
     choice = callback_query.data
     user_id = callback_query.from_user.id
@@ -290,19 +290,19 @@ async def handle_callback(client, callback_query):
     # Rename mode ke hisaab se message aur storage
     if choice == "filename":
         await callback_query.message.reply_text("Please send the file, and I'll rename it using its filename.")
-        app.storage.set(user_id, "rename_mode", "filename")
+        client.storage.set(user_id, "rename_mode", "filename")
 
     elif choice == "filecaption":
         await callback_query.message.reply_text("Please send the file, and I'll rename it using its caption.")
-        app.storage.set(user_id, "rename_mode", "filecaption")
+        client.storage.set(user_id, "rename_mode", "filecaption")
 
     await callback_query.answer()
 
 # File handler
-@Client.on_message(app, filters.document & filters.private)
+@Client.on_message(filters.document & filters.private)
 async def handle_file(client, message):
     user_id = message.from_user.id
-    rename_mode = app.storage.get(user_id, "rename_mode")
+    rename_mode = client.storage.get(user_id, "rename_mode")
 
     if not rename_mode:
         await message.reply_text("Please use /extraction first to choose a rename mode.")
@@ -340,8 +340,4 @@ async def handle_file(client, message):
 
     # Cleanup
     os.remove(renamed_file_path)
-    app.storage.delete(user_id, "rename_mode")
-
-# Bot ko run karna
-if __name__ == "__main__":
-    app.run()
+    client.storage.delete(user_id, "rename_mode")
