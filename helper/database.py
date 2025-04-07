@@ -188,7 +188,7 @@ codeflixbots = Database(Config.DB_URL, Config.DB_NAME)
 
 
 class Database:
-    def __init__(self, mongo_uri="mongodb://localhost:27017/", db_name="telegram_bot"):
+    def __init__(self, mongo_uri="Config.DB_URL, Config.DB_NAME"):
         self.client = MongoClient(mongo_uri)
         self.db = self.client[db_name]
         self.tokens_collection = self.db["tokens"]
