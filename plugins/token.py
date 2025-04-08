@@ -2,6 +2,10 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from helper.database import *
 from config import *
+import os
+
+# Bot token from environment variable or default
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "7226201611:AAFKIORqsweNvr2q0bsppyqBPzvr7MlwuTk")
 
 # Client initialize with bot token
 client = Client("my_bot", bot_token=BOT_TOKEN)
@@ -32,7 +36,7 @@ async def start(client, message):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await message.reply("Welcome to Token Bot!\n\n{text}", "reply_markup hydro_markup")
+    await message.reply(f"Welcome to Token Bot!\n\n{text}", reply_markup=reply_markup)
 
 # Button handler
 @client.on_callback_query()
