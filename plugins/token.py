@@ -1,6 +1,6 @@
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from helper.database import *
+from helper.database import TokenDatabase  # Updated import
 from config import *
 import os
 
@@ -10,8 +10,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "7226201611:AAFKIORqsweNvr2q0bsppyqBPzvr
 # Client initialize with bot token
 client = Client("my_bot", bot_token=BOT_TOKEN)
 
-# Database initialize
-db = Database()
+# Database initialize with TokenDatabase
+db = TokenDatabase(Config.DB_URL, Config.DB_NAME)  # Updated to TokenDatabase
 
 # Token info ko format karne ke liye
 def format_token_info(token_info):
@@ -25,7 +25,7 @@ def is_authorized(chat_id):
 @client.on_message(filters.command("start"))
 async def start(client, message):
     chat_id = message.chat.id
-    token_info = db.get_token_info(chat_id)
+    token_info = await db.get_token_info(chat_id)  # Now async
     text = format_token_info(token_info)
     
     keyboard = [
@@ -47,8 +47,8 @@ async def button(client, callback_query):
     if data == "set_token":
         await callback_query.edit_message_text("Naya token daal do: /settoken <token>")
     elif data == "on_token":
-        db.on_token(chat_id)
-        token_info = db.get_token_info(chat_id)
+        await db.on_token(chat_id)  # Now async
+        token_info = await db.get_token_info(chat_id)  # Now async
         text = format_token_info(token_info)
         keyboard = [
             [InlineKeyboardButton("Set Token", callback_data='set_token')],
@@ -58,8 +58,8 @@ async def button(client, callback_query):
         ]
         await callback_query.edit_message_text(f"Token ON kar diya!\n\n{text}", reply_markup=InlineKeyboardMarkup(keyboard))
     elif data == "off_token":
-        db.off_token(chat_id)
-        token_info = db.get_token_info(chat_id)
+        await db.off_token(chat_id)  # Now async
+        token_info = await db.get_token_info(chat_id)  # Now async
         text = format_token_info(token_info)
         keyboard = [
             [InlineKeyboardButton("Set Token", callback_data='set_token')],
@@ -80,8 +80,8 @@ async def set_token(client, message):
         return
     
     new_token = message.command[1]
-    db.set_token(chat_id, new_token)
-    token_info = db.get_token_info(chat_id)
+    await db.set_token(chat_id, new_token)  # Now async
+    token_info = await db.get_token_info(chat_id)  # Now async
     text = format_token_info(token_info)
     
     keyboard = [
@@ -107,7 +107,7 @@ async def give_token(client, message):
     try:
         target_chat_id = int(message.command[1])
         amount = int(message.command[2])
-        db.give_token(target_chat_id, amount)
+        await db.give_token(target_chat_id, amount)  # Now async
         await message.reply(f"{target_chat_id} ko {amount} tokens de diye!")
         await client.send_message(target_chat_id, f"Bhai, tujhe {amount} tokens mil gaye hai!")
     except ValueError:
@@ -127,7 +127,7 @@ async def set_reward(client, message):
     
     try:
         amount = int(message.command[1])
-        db.set_reward(amount)
+        await db.set_reward(amount)  # Now async
         await message.reply(f"Reward set kar diya! Ab ek solve pe {amount} tokens milenge.")
     except ValueError:
         await message.reply("Amount number hona chahiye!")
@@ -136,8 +136,8 @@ async def set_reward(client, message):
 @client.on_message(filters.command("solve"))
 async def solve(client, message):
     chat_id = message.chat.id
-    reward = db.reward_user(chat_id)
-    token_info = db.get_token_info(chat_id)
+    reward = await db.reward_user(chat_id)  # Now async
+    token_info = await db.get_token_info(chat_id)  # Now async
     text = format_token_info(token_info)
     await message.reply(f"Solve kar diya! Tujhe {reward} tokens mile.\n\n{text}")
 
