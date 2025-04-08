@@ -7,7 +7,7 @@ class Config(object):
     # pyro client config
     API_ID    = os.environ.get("API_ID", "20718334")
     API_HASH  = os.environ.get("API_HASH", "4e81464b29d79c58d0ad8a0c55ece4a5")
-    BOT_TOKEN = os.environ.get("BOT_TOKEN", "7226201611:AAFKIORqsweNvr2q0bsppyqBPzvr7MlwuTk") 
+    BOT_TOKEN = os.environ.get("BOT_TOKEN", "7871117577:AAE-5op-GX41uVdceNzOPaj3cncZZZb6Nh8") 
 
     # database config
     DB_NAME = os.environ.get("DB_NAME","Cluster0")     
@@ -19,7 +19,7 @@ class Config(object):
     START_PIC   = os.environ.get("START_PIC", "https://graph.org/file/29a3acbbab9de5f45a5fe.jpg")
     ADMIN       = [int(admin) if id_pattern.search(admin) else admin for admin in os.environ.get('ADMIN', '5585016974').split()]
     FORCE_SUB_CHANNELS = os.environ.get('FORCE_SUB_CHANNELS', 'animes_sub_society').split(',')
-    LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "-1002078429106"))
+    LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "-1002200709110"))
     DUMP_CHANNEL = int(os.environ.get("DUMP_CHANNEL", "-1002200709110"))
     OWNER_ID = int(os.environ.get("OWNER_ID", "5585016974"))
 
