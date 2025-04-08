@@ -5,7 +5,7 @@ from config import *
 import os
 
 # Bot token from environment variable or default
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "7226201611:AAFKIORqsweNvr2q0bsppyqBPzvr7MlwuTk")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "7871117577:AAE-5op-GX41uVdceNzOPaj3cncZZZb6Nh8")
 # Owner ID from environment variable or default
 OWNER_ID = int(os.environ.get("OWNER_ID", "5585016974"))
 
