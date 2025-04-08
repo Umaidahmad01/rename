@@ -1,9 +1,12 @@
-import motor.motor_asyncio, datetime, pytz
+import motor.motor_asyncio
+import datetime
+import pytz
 from config import Config
-import logging  # Added for logging errors and important information
+import logging
 from .utils import send_log
 from pymongo import MongoClient
 
+# First Database class (unchanged)
 class Database:
     def __init__(self, uri, database_name):
         try:
@@ -12,7 +15,7 @@ class Database:
             logging.info("Successfully connected to MongoDB")
         except Exception as e:
             logging.error(f"Failed to connect to MongoDB: {e}")
-            raise e  # Re-raise the exception after logging it
+            raise e
         self.codeflixbots = self._client[database_name]
         self.col = self.codeflixbots.user
 
@@ -182,91 +185,122 @@ class Database:
     async def set_video(self, user_id, video):
         await self.col.update_one({'_id': int(user_id)}, {'$set': {'video': video}})
 
-
 codeflixbots = Database(Config.DB_URL, Config.DB_NAME)
 
-
-
-class Database:
-    def __init__(self, mongo_uri="Config.DB_URL, Config.DB_NAME"):
-        self.client = MongoClient(mongo_uri)
-        self.db = self.client[db_name]
+# Second Database class (fixed for tokens)
+class TokenDatabase:
+    def __init__(self, uri, database_name):
+        try:
+            self._client = motor.motor_asyncio.AsyncIOMotorClient(uri)
+            self._client.server_info()  # Check connection
+            logging.info("Successfully connected to MongoDB for TokenDatabase")
+        except Exception as e:
+            logging.error(f"Failed to connect to MongoDB for TokenDatabase: {e}")
+            raise e
+        self.db = self._client[database_name]
         self.tokens_collection = self.db["tokens"]
-        self.settings_collection = self.db["settings"]  # Reward settings ke liye naya collection
+        self.settings_collection = self.db["settings"]
 
-    # Token info get karne ke liye
-    def get_token_info(self, chat_id):
-        token_data = self.tokens_collection.find_one({"chat_id": chat_id})
-        if token_data:
-            status = "ON" if token_data.get("status", False) else "OFF"
-            current_token = token_data.get("token", "Koi token set nahi hai")
-            user_tokens = token_data.get("user_tokens", 0)  # User ke tokens
+    async def get_token_info(self, chat_id):
+        try:
+            token_data = await self.tokens_collection.find_one({"chat_id": chat_id})
+            if token_data:
+                status = "ON" if token_data.get("status", False) else "OFF"
+                current_token = token_data.get("token", "Koi token set nahi hai")
+                user_tokens = token_data.get("user_tokens", 0)
+                return {
+                    "status": status,
+                    "token": current_token,
+                    "user_tokens": user_tokens,
+                    "api": "https://api.example.com",
+                    "site": "https://example.com"
+                }
             return {
-                "status": status,
-                "token": current_token,
-                "user_tokens": user_tokens,
+                "status": "OFF",
+                "token": "Koi token set nahi hai",
+                "user_tokens": 0,
                 "api": "https://api.example.com",
                 "site": "https://example.com"
             }
-        return {
-            "status": "OFF",
-            "token": "Koi token set nahi hai",
-            "user_tokens": 0,
-            "api": "https://api.example.com",
-            "site": "https://example.com"
-        }
+        except Exception as e:
+            logging.error(f"Error getting token info for {chat_id}: {e}")
+            return {
+                "status": "OFF",
+                "token": "Koi token set nahi hai",
+                "user_tokens": 0,
+                "api": "https://api.example.com",
+                "site": "https://example.com"
+            }
 
-    # Token set ya update karne ke liye
-    def set_token(self, chat_id, token):
-        self.tokens_collection.update_one(
-            {"chat_id": chat_id},
-            {"$set": {"token": token, "status": True}},
-            upsert=True
-        )
+    async def set_token(self, chat_id, token):
+        try:
+            await self.tokens_collection.update_one(
+                {"chat_id": chat_id},
+                {"$set": {"token": token, "status": True}},
+                upsert=True
+            )
+        except Exception as e:
+            logging.error(f"Error setting token for {chat_id}: {e}")
 
-    # Token ON karne ke liye
-    def on_token(self, chat_id):
-        self.tokens_collection.update_one(
-            {"chat_id": chat_id},
-            {"$set": {"status": True}},
-            upsert=True
-        )
+    async def on_token(self, chat_id):
+        try:
+            await self.tokens_collection.update_one(
+                {"chat_id": chat_id},
+                {"$set": {"status": True}},
+                upsert=True
+            )
+        except Exception as e:
+            logging.error(f"Error turning on token for {chat_id}: {e}")
 
-    # Token OFF karne ke liye
-    def off_token(self, chat_id):
-        self.tokens_collection.update_one(
-            {"chat_id": chat_id},
-            {"$set": {"status": False}},
-            upsert=True
-        )
+    async def off_token(self, chat_id):
+        try:
+            await self.tokens_collection.update_one(
+                {"chat_id": chat_id},
+                {"$set": {"status": False}},
+                upsert=True
+            )
+        except Exception as e:
+            logging.error(f"Error turning off token for {chat_id}: {e}")
 
-    # Token change karne ke liye
-    def change_token(self, chat_id, new_token):
-        self.set_token(chat_id, new_token)
+    async def change_token(self, chat_id, new_token):
+        await self.set_token(chat_id, new_token)
 
-    # User ko token dene ke liye
-    def give_token(self, chat_id, amount):
-        self.tokens_collection.update_one(
-            {"chat_id": chat_id},
-            {"$inc": {"user_tokens": amount}},  # Tokens increment karo
-            upsert=True
-        )
+    async def give_token(self, chat_id, amount):
+        try:
+            await self.tokens_collection.update_one(
+                {"chat_id": chat_id},
+                {"$inc": {"user_tokens": amount}},
+                upsert=True
+            )
+        except Exception as e:
+            logging.error(f"Error giving tokens to {chat_id}: {e}")
 
-    # Reward amount set karne ke liye
-    def set_reward(self, amount):
-        self.settings_collection.update_one(
-            {"key": "reward_amount"},
-            {"$set": {"value": amount}},
-            upsert=True
-        )
+    async def set_reward(self, amount):
+        try:
+            await self.settings_collection.update_one(
+                {"key": "reward_amount"},
+                {"$set": {"value": amount}},
+                upsert=True
+            )
+        except Exception as e:
+            logging.error(f"Error setting reward: {e}")
 
-    # Reward amount get karne ke liye
-    def get_reward(self):
-        reward_data = self.settings_collection.find_one({"key": "reward_amount"})
-        return reward_data["value"] if reward_data else 10  # Default 10 tokens
+    async def get_reward(self):
+        try:
+            reward_data = await self.settings_collection.find_one({"key": "reward_amount"})
+            return reward_data["value"] if reward_data else 10  # Default 10 tokens
+        except Exception as e:
+            logging.error(f"Error getting reward: {e}")
+            return 10
 
-    # Solve karne pe reward dene ke liye (example function)
-    def reward_user(self, chat_id):
-        reward_amount = self.get_reward()
-        self.give_token(chat_id, reward_amount)
-        return reward_amount
+    async def reward_user(self, chat_id):
+        try:
+            reward_amount = await self.get_reward()
+            await self.give_token(chat_id, reward_amount)
+            return reward_amount
+        except Exception as e:
+            logging.error(f"Error rewarding user {chat_id}: {e}")
+            return 0
+
+# Initialize the token database
+token_db = TokenDatabase(Config.DB_URL, Config.DB_NAME)
