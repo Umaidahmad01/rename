@@ -19,7 +19,7 @@ class Config(object):
     START_PIC   = os.environ.get("START_PIC", "https://envs.sh/Zs_.png?AQIcf=1 https://envs.sh/ZsA.png?4Agvq=1")
     ADMIN       = [int(admin) if id_pattern.search(admin) else admin for admin in os.environ.get('ADMIN', '5585016974').split()]
     FORCE_SUB_CHANNELS = os.environ.get('FORCE_SUB_CHANNELS', 'animes_sub_society').split(',')
-    LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "-1002078429106"))
+    LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", "-1002200709110"))
     DUMP_CHANNEL = int(os.environ.get("DUMP_CHANNEL", "-1002200709110"))
     
     # wes response configuration     
