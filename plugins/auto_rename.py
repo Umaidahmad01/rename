@@ -34,9 +34,9 @@ async def auto_rename_command(client, message):
 async def set_media_command(client, message):
     """Initiate media type selection with a sleek inline keyboard."""
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📜 Documents", callback_data="setmedia_document")],
-        [InlineKeyboardButton("🎬 Videos", callback_data="setmedia_video")],
-        [InlineKeyboardButton("🎵 Audio", callback_data="setmedia_audio")],  # Added audio option
+        [InlineKeyboardButton("Documents", callback_data="setmedia_document")],
+        [InlineKeyboardButton("Videos", callback_data="setmedia_video")],
+        [InlineKeyboardButton("Audio", callback_data="setmedia_audio")],  # Added audio option
     ])
 
     await message.reply_text(
@@ -57,14 +57,14 @@ async def handle_media_selection(client, callback_query: CallbackQuery):
 
         await callback_query.answer(f"Locked in: {media_type} 🎉")
         await callback_query.message.edit_text(
-            f"🎯 **Media Preference Updated** 🎯\n"
+            f"🎯 **Media Preference Updated** \n"
             f"Your vibe is now set to: **{media_type}** ✅\n"
             f"Ready to roll with your choice!"
         )
     except Exception as e:
-        await callback_query.answer("Oops, something went wrong! 😅")
+        await callback_query.answer("Oops, something went wrong!")
         await callback_query.message.edit_text(
-            f"⚠️ **Error Setting Preference** ⚠️\n"
+            f"⚠️ **Error Setting Preference** \n"
             f"Couldn’t set {media_type} right now. Try again later!\n"
             f"Details: {str(e)}"
         )
