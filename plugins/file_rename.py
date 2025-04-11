@@ -144,7 +144,12 @@ async def auto_rename_files(client, message):
     """Main handler for auto-renaming files"""
     user_id = message.from_user.id
     format_template = await codeflixbots.get_format_template(user_id)
-    
+
+    # Pre-define variables to avoid UnboundLocalError
+    download_path = None
+    metadata_path = None
+    thumb_path = None
+
     if not format_template:
         return await message.reply_text("Please set a rename format using /autorename")
 
