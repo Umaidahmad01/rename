@@ -1,11 +1,17 @@
 import motor.motor_asyncio
 import datetime
 import pytz
-from config import *
+from config import Config
 import logging
 from .utils import send_log
 from pymongo import MongoClient
 from typing import Optional
+import os
+
+# Access environment variables if available
+DB_URL = os.getenv("DB_URL", Config.DB_URL)
+DB_NAME = os.getenv("DB_NAME", Config.DB_NAME)
+DUMP_CHANNEL = os.getenv("DUMP_CHANNEL", getattr(Config, "DUMP_CHANNEL", None))
 
 # Database class with all functionality
 class Database:
@@ -249,4 +255,4 @@ class Database:
             return False
 
 # Initialize the database
-codeflixbots = Database(DB_URL, DB_NAME)
+codeflixbots = Database()
