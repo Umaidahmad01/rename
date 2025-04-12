@@ -1,7 +1,7 @@
 import motor.motor_asyncio
 import datetime
 import pytz
-from config import DB_URL, DB_NAME, DUMP_CHANNEL
+from config import *
 import logging
 from .utils import send_log
 from pymongo import MongoClient
