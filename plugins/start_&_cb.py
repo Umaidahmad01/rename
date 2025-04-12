@@ -2,11 +2,11 @@ import random
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-from helper.database import codeflixbots
+from helper.database import *
 from config import *
 
 # Initialize MongoDB
-db: helper.database = Database(DB_URL, DB_NAME)
+db: Database = Database(DB_URL, DB_NAME)
 
 # Start Command Handler
 @Client.on_message(filters.private & filters.command("start"))
@@ -243,6 +243,7 @@ async def help_command(client, message):
             [InlineKeyboardButton('• ʜᴏᴍᴇ', callback_data='home')]
         ])
     )
+
 
 
 @Client.on_message(filters.command("extraction") & filters.private)
