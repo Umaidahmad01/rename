@@ -6,6 +6,9 @@ from helper.database import codeflixbots
 from config import *
 from config import Config
 
+# Initialize MongoDB
+db: Database = Database(DB_URL, DB_NAME)
+
 # Start Command Handler
 @Client.on_message(filters.private & filters.command("start"))
 async def start(client, message: Message):
@@ -243,100 +246,94 @@ async def help_command(client, message):
     )
 
 
-# /extraction command
 @Client.on_message(filters.command("extraction") & filters.private)
-async def extraction_command(client, message):
-    # Inline buttons banane ke liye
-    keyboard = [
+async def extraction_command(client: Client, message: Message) -> None:
+    keyboard: List[List[InlineKeyboardButton]] = [
         [InlineKeyboardButton("Filename", callback_data="filename")],
         [InlineKeyboardButton("Filecaption", callback_data="filecaption")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # User ko message bhejna
     await message.reply_text(
         "Choose how you want to rename the file:",
         reply_markup=reply_markup
     )
 
-# Inline button callback handler
 @Client.on_callback_query()
-async def handle_callback(client, callback_query):
-    choice = callback_query.data
-    user_id = callback_query.from_user.id
+async def handle_callback(client: Client, callback_query: CallbackQuery) -> None:
+    try:
+        choice: str = callback_query.data
+        user_id: int = callback_query.from_user.id
 
-    # Original keyboard ko fetch karna
-    original_keyboard = callback_query.message.reply_markup.inline_keyboard
+        original_keyboard: List[List[InlineKeyboardButton]] = callback_query.message.reply_markup.inline_keyboard
+        updated_keyboard: List[List[InlineKeyboardButton]] = []
+        for row in original_keyboard:
+            updated_row: List[InlineKeyboardButton] = []
+            for button in row:
+                if button.callback_data == choice:
+                    updated_row.append(InlineKeyboardButton(f"{button.text} ✅", callback_data=button.callback_data))
+                else:
+                    updated_row.append(button)
+            updated_keyboard.append(updated_row)
 
-    # Updated keyboard with tick emoji
-    updated_keyboard = []
-    for row in original_keyboard:
-        updated_row = []
-        for button in row:
-            if button.callback_data == choice:
-                # Selected button pe tick emoji add karna
-                updated_row.append(InlineKeyboardButton(f"{button.text} ✅", callback_data=button.callback_data))
-            else:
-                # Baaki buttons same rakhna
-                updated_row.append(button)
-        updated_keyboard.append(updated_row)
+        await callback_query.message.edit_reply_markup(
+            reply_markup=InlineKeyboardMarkup(updated_keyboard)
+        )
 
-    # Message ko edit karna with updated keyboard
-    await callback_query.message.edit_reply_markup(
-        reply_markup=InlineKeyboardMarkup(updated_keyboard)
-    )
+        if choice == "filename":
+            await callback_query.message.reply_text("Please send the file, and I'll rename it using its filename.")
+            db.set_user_choice(user_id, "filename")
 
-    # Rename mode ke hisaab se message aur storage
-    if choice == "filename":
-        await callback_query.message.reply_text("Please send the file, and I'll rename it using its filename.")
-        client.storage.set(user_id, "rename_mode", "filename")
+        elif choice == "filecaption":
+            await callback_query.message.reply_text("Please send the file, and I'll rename it using its caption.")
+            db.set_user_choice(user_id, "filecaption")
 
-    elif choice == "filecaption":
-        await callback_query.message.reply_text("Please send the file, and I'll rename it using its caption.")
-        client.storage.set(user_id, "rename_mode", "filecaption")
+        await callback_query.answer("Option selected!")
+    except Exception as e:
+        await callback_query.message.reply_text(f"Error occurred: {str(e)}")
+        await callback_query.answer("Something went wrong!")
 
-    await callback_query.answer()
-
-# File handler
 @Client.on_message(filters.document & filters.private)
-async def handle_file(client, message):
-    user_id = message.from_user.id
-    rename_mode = client.storage.get(user_id, "rename_mode")
+async def handle_file(client: Client, message: Message) -> None:
+    user_id: int = message.from_user.id
+    rename_mode: Optional[str] = db.get_user_choice(user_id)
 
     if not rename_mode:
         await message.reply_text("Please use /extraction first to choose a rename mode.")
         return
 
     file = message.document
-    new_name = ""
+    new_name: str = ""
 
-    if rename_mode == "filename":
-        new_name = file.file_name
-        await message.reply_text(f"Renaming file using filename: {new_name}")
+    try:
+        if rename_mode == "filename":
+            new_name = file.file_name or f"unnamed_{user_id}.bin"
+            await message.reply_text(f"Renaming file using filename: {new_name}")
 
-    elif rename_mode == "filecaption":
-        caption = message.caption
-        if caption:
-            new_name = caption + "." + file.file_name.split('.')[-1]  # Extension retain karna
-            await message.reply_text(f"Renaming file using caption: {new_name}")
-        else:
-            new_name = file.file_name
-            await message.reply_text("No caption provided, using filename instead.")
+        elif rename_mode == "filecaption":
+            caption: Optional[str] = message.caption
+            if caption:
+                extension: str = file.file_name.split('.')[-1] if '.' in file.file_name else 'bin'
+                new_name = f"{caption}.{extension}"
+                await message.reply_text(f"Renaming file using caption: {new_name}")
+            else:
+                new_name = file.file_name or f"unnamed_{user_id}.bin"
+                await message.reply_text("No caption provided, using filename instead.")
 
-    # File download aur rename
-    file_path = await client.download_media(file)
-    renamed_file_path = f"downloads/{new_name}"
+        file_path: str = await client.download_media(file)
+        renamed_file_path: str = f"downloads/{new_name}"
 
-    os.makedirs("downloads", exist_ok=True)  # Downloads folder banane ke liye
-    os.rename(file_path, renamed_file_path)
+        os.makedirs("downloads", exist_ok=True)
+        os.rename(file_path, renamed_file_path)
 
-    # Renamed file upload karna
-    await client.send_document(
-        chat_id=message.chat.id,
-        document=renamed_file_path,
-        file_name=new_name
-    )
+        await client.send_document(
+            chat_id=message.chat.id,
+            document=renamed_file_path,
+            file_name=new_name
+        )
 
-    # Cleanup
-    os.remove(renamed_file_path)
-    client.storage.delete(user_id, "rename_mode")
+        os.remove(renamed_file_path)
+        db.delete_user_choice(user_id)
+
+    except Exception as e:
+        await message.reply_text(f"Error while processing file: {str(e)}")
