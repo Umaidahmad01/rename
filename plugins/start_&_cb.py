@@ -6,7 +6,7 @@ from helper.database import codeflixbots
 from config import *
 
 # Initialize MongoDB
-db: Database = Database(DB_URL, DB_NAME)
+db: helper.database = Database(DB_URL, DB_NAME)
 
 # Start Command Handler
 @Client.on_message(filters.private & filters.command("start"))
