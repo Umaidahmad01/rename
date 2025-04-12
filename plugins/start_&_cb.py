@@ -4,7 +4,6 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from helper.database import codeflixbots
 from config import *
-from config import Config
 
 # Initialize MongoDB
 db: Database = Database(DB_URL, DB_NAME)
