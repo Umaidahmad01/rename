@@ -25,7 +25,7 @@ class Database:
             logging.error(f"Failed to connect to async MongoDB: {e}")
             raise e
         
-        # Sync MongoDB connection
+        # Sync MongoDB connection (kept for compatibility, but not used for rename)
         try:
             obito.client = MongoClient(uri)
             logging.info("Successfully connected to sync MongoDB")
@@ -37,9 +37,9 @@ class Database:
         obito.codeflixbots = obito._async_client[db_name]
         obito.col = obito.codeflixbots.user
 
-        # Sync collections
+        # Sync collections (kept for compatibility)
         obito.db = obito.client[db_name]
-        obito.users = obito.db.users  # Collection for storing user data
+        obito.users = obito.db.users
 
         # Store DUMP_CHANNEL for potential use
         obito.dump_channel = DUMP_CHANNEL
@@ -210,14 +210,14 @@ class Database:
     async def set_video(obito, user_id, video):
         await obito.col.update_one({'_id': int(user_id)}, {'$set': {'video': video}})
 
-    # Synchronous methods for rename mode
-    def set_user_choice(obito, user_id: int, rename_mode: str) -> bool:
+    # Asynchronous methods for rename mode
+    async def set_user_choice(obito, user_id: int, rename_mode: str) -> bool:
         """
         Save user's rename mode choice and add extra name 'obito' in MongoDB
         """
         try:
-            obito.users.update_one(
-                {"user_id": user_id},
+            await obito.col.update_one(
+                {"_id": user_id},
                 {
                     "$set": {
                         "rename_mode": rename_mode,
@@ -227,31 +227,38 @@ class Database:
                 },
                 upsert=True
             )
+            logging.info(f"Saved rename_mode '{rename_mode}' for user {user_id}")
             return True
         except Exception as e:
-            logging.error(f"Error saving user choice: {str(e)}")
+            logging.error(f"Error saving user choice for {user_id}: {str(e)}")
             return False
 
-    def get_user_choice(obito, user_id: int) -> Optional[str]:
+    async def get_user_choice(obito, user_id: int) -> Optional[str]:
         """
         Retrieve user's rename mode from MongoDB
         """
         try:
-            user: Optional[dict] = obito.users.find_one({"user_id": user_id})
-            return user.get("rename_mode") if user else None
+            user = await obito.col.find_one({"_id": user_id})
+            rename_mode = user.get("rename_mode") if user else None
+            logging.info(f"Retrieved rename_mode '{rename_mode}' for user {user_id}")
+            return rename_mode
         except Exception as e:
-            logging.error(f"Error retrieving user choice: {str(e)}")
+            logging.error(f"Error retrieving user choice for {user_id}: {str(e)}")
             return None
 
-    def delete_user_choice(obito, user_id: int) -> bool:
+    async def delete_user_choice(obito, user_id: int) -> bool:
         """
         Delete user's rename mode from MongoDB after processing
         """
         try:
-            obito.users.delete_one({"user_id": user_id})
-            return True
+            result = await obito.col.update_one(
+                {"_id": user_id},
+                {"$unset": {"rename_mode": "", "extra_name": "", "updated_at": ""}}
+            )
+            logging.info(f"Deleted rename_mode for user {user_id}")
+            return result.modified_count > 0
         except Exception as e:
-            logging.error(f"Error deleting user choice: {str(e)}")
+            logging.error(f"Error deleting user choice for {user_id}: {str(e)}")
             return False
 
 # Initialize the database
