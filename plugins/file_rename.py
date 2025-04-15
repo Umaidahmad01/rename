@@ -24,8 +24,6 @@ logger = logging.getLogger(__name__)
 
 renaming_operations = {}
 user_tasks = {}
-file_queue = asyncio.Queue()  # Unlimited queue
-processing_files = set()
 
 SEASON_EPISODE_PATTERNS = [
     (re.compile(r'S(\d+)(?:E|EP)(\d+)'), ('season', 'episode')),
@@ -135,45 +133,6 @@ async def add_metadata(input_path, output_path, user_id):
     except Exception as e:
         logger.error(f"Metadata processing failed: {e}")
         raise
-
-async def queue_worker(client):
-    while True:
-        if len(processing_files) >= Config.QUEUE_SIZE:
-            await asyncio.sleep(1)
-            continue
-        
-        try:
-            message = await file_queue.get()
-            user_id = message.from_user.id
-            media = message.document or message.video or message.audio
-            file_id = media.file_id
-            file_name = media.file_name or "unknown"
-            
-            if file_id in processing_files:
-                file_queue.task_done()
-                continue
-                
-            processing_files.add(file_id)
-            logger.info(f"Processing file {file_id} for user {user_id}")
-            
-            try:
-                await process_file(client, message)
-                await send_log(client, message.from_user, f"Processed file {file_name}")
-            except Exception as e:
-                logger.error(f"Queue processing error for file {file_id}: {e}")
-                await send_log(client, message.from_user, f"Error processing file {file_name}: {str(e)}")
-            finally:
-                processing_files.discard(file_id)
-                file_queue.task_done()
-                # Delete specific user task
-                await codeflixbots.tasks.delete_one({"user_id": user_id, "file_id": file_id})
-                
-        except asyncio.CancelledError:
-            logger.info("Queue worker cancelled")
-            break
-        except Exception as e:
-            logger.error(f"Queue worker error: {e}")
-            file_queue.task_done()
 
 async def process_file(client, message):
     user_id = message.from_user.id
@@ -427,7 +386,6 @@ async def process_file(client, message):
     else:
         await message.reply_text("Use /extraction to set a rename mode.")
 
-
 @Client.on_message(filters.command("extraction") & filters.private)
 async def extraction_command(client: Client, message: Message) -> None:
     try:
@@ -521,6 +479,7 @@ async def handle_callback(client: Client, callback_query: CallbackQuery) -> None
                     await callback_query.message.reply_text("Error: Database issue.")
                     await callback_query.answer("Database error!")
                     await send_log(client, callback_query.from_user, f"Database save error: {str(e)}")
+                    return
                 await asyncio.sleep(1)
 
         await callback_query.answer("Option selected!")
@@ -549,24 +508,10 @@ async def clear_tasks(client: Client, message: Message) -> None:
             user_tasks[user_id] = []
             logger.info(f"Cleared {len(tasks)} tasks for user {user_id}")
 
-        # Clear queue
-        temp_queue = asyncio.Queue()
-        while not file_queue.empty():
-            try:
-                item = await file_queue.get_nowait()
-                if item.from_user.id != user_id:
-                    await temp_queue.put(item)
-                file_queue.task_done()
-            except asyncio.QueueEmpty:
-                break
-        while not temp_queue.empty():
-            await file_queue.put(await temp_queue.get())
-            temp_queue.task_done()
-
         # Clear database tasks
         await codeflixbots.delete_user_tasks(user_id)
         await codeflixbots.delete_user_choice(user_id)
-        await message.reply_text("All ongoing tasks, queued files, and settings cleared!")
+        await message.reply_text("All ongoing tasks and settings cleared!")
         await send_log(client, message.from_user, "Cleared all tasks and settings")
     except ChatAdminRequired as e:
         logger.error(f"ChatAdminRequired in clear: {e}")
@@ -590,19 +535,12 @@ async def auto_rename_files(client, message):
     try:
         # Add task to database
         await codeflixbots.add_task(user_id, file_id, file_name)
-        await file_queue.put(message)
-        logger.info(f"Queued file {file_id} for user {user_id}, queue size: {file_queue.qsize()}")
-        await send_log(client, message.from_user, f"Queued file: {file_name}")
+        logger.info(f"Processing file {file_id} for user {user_id}")
+        await send_log(client, message.from_user, f"Processing file: {file_name}")
+        await process_file(client, message)
     except Exception as e:
-        logger.error(f"Error queuing file for user {user_id}: {e}")
-        await message.reply_text("Error: Couldn't queue file.")
-        await send_log(client, message.from_user, f"Queue error: {str(e)}")
+        logger.error(f"Error processing file for user {user_id}: {e}")
+        await message.reply_text("Error: Couldn't process file.")
+        await send_log(client, message.from_user, f"Processing error: {str(e)}")
 
-# Start queue workers
-async def start_queue_workers(client):
-    workers = [
-        asyncio.create_task(queue_worker(client))
-        for _ in range(Config.QUEUE_SIZE)
-    ]
-    return workers
-    
+
