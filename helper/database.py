@@ -7,6 +7,7 @@ from .utils import send_log
 from pymongo import MongoClient
 from typing import Optional
 import os
+import asyncio
 
 # Access environment variables if available
 DB_URL = os.getenv("DB_URL", Config.DB_URL)
@@ -25,7 +26,7 @@ class Database:
             logging.error(f"Failed to connect to async MongoDB: {e}")
             raise e
         
-        # Sync MongoDB connection (kept for compatibility, but not used for rename)
+        # Sync MongoDB connection (kept for compatibility)
         try:
             obito.client = MongoClient(uri)
             logging.info("Successfully connected to sync MongoDB")
@@ -41,8 +42,22 @@ class Database:
         obito.db = obito.client[db_name]
         obito.users = obito.db.users
 
-        # Store DUMP_CHANNEL for potential use
+        # Store DUMP_CHANNEL
         obito.dump_channel = DUMP_CHANNEL
+
+        # Migrate metadata to False for existing users
+        asyncio.create_task(obito.migrate_metadata())
+
+    async def migrate_metadata(obito):
+        """Set metadata=False for all existing users."""
+        try:
+            result = await obito.col.update_many(
+                {"metadata": {"$ne": False}},
+                {"$set": {"metadata": False}}
+            )
+            logging.info(f"Migrated {result.modified_count} users to metadata=False")
+        except Exception as e:
+            logging.error(f"Error migrating metadata: {e}")
 
     def new_user(obito, id):
         return dict(
@@ -50,7 +65,7 @@ class Database:
             join_date=datetime.date.today().isoformat(),
             file_id=None,
             caption=None,
-            metadata=True,
+            metadata=False,  # Default off
             metadata_code="Telegram : @Codeflix_Bots",
             format_template=None,
             ban_status=dict(
@@ -162,59 +177,105 @@ class Database:
             return None
 
     async def get_metadata(obito, user_id):
-        user = await obito.col.find_one({'_id': int(user_id)})
-        return user.get('metadata', "Off")
+        try:
+            user = await obito.col.find_one({'_id': int(user_id)})
+            return user.get('metadata', False) if user else False
+        except Exception as e:
+            logging.error(f"Error getting metadata for user {user_id}: {e}")
+            return False
 
     async def set_metadata(obito, user_id, metadata):
-        await obito.col.update_one({'_id': int(user_id)}, {'$set': {'metadata': metadata}})
+        try:
+            await obito.col.update_one({'_id': int(user_id)}, {'$set': {'metadata': bool(metadata)}})
+            logging.info(f"Set metadata to {metadata} for user {user_id}")
+        except Exception as e:
+            logging.error(f"Error setting metadata for user {user_id}: {e}")
 
     async def get_title(obito, user_id):
-        user = await obito.col.find_one({'_id': int(user_id)})
-        return user.get('title', 'Encoded by @Animes_Sub_Society')
+        try:
+            user = await obito.col.find_one({'_id': int(user_id)})
+            return user.get('title', None) if user else None
+        except Exception as e:
+            logging.error(f"Error getting title for user {user_id}: {e}")
+            return None
 
     async def set_title(obito, user_id, title):
-        await obito.col.update_one({'_id': int(user_id)}, {'$set': {'title': title}})
+        try:
+            await obito.col.update_one({'_id': int(user_id)}, {'$set': {'title': title}})
+        except Exception as e:
+            logging.error(f"Error setting title for user {user_id}: {e}")
 
     async def get_author(obito, user_id):
-        user = await obito.col.find_one({'_id': int(user_id)})
-        return user.get('author', '@Animes_Sub_Society')
+        try:
+            user = await obito.col.find_one({'_id': int(user_id)})
+            return user.get('author', None) if user else None
+        except Exception as e:
+            logging.error(f"Error getting author for user {user_id}: {e}")
+            return None
 
     async def set_author(obito, user_id, author):
-        await obito.col.update_one({'_id': int(user_id)}, {'$set': {'author': author}})
+        try:
+            await obito.col.update_one({'_id': int(user_id)}, {'$set': {'author': author}})
+        except Exception as e:
+            logging.error(f"Error setting author for user {user_id}: {e}")
 
     async def get_artist(obito, user_id):
-        user = await obito.col.find_one({'_id': int(user_id)})
-        return user.get('artist', '@Animes_Sub_Society')
+        try:
+            user = await obito.col.find_one({'_id': int(user_id)})
+            return user.get('artist', None) if user else None
+        except Exception as e:
+            logging.error(f"Error getting artist for user {user_id}: {e}")
+            return None
 
     async def set_artist(obito, user_id, artist):
-        await obito.col.update_one({'_id': int(user_id)}, {'$set': {'artist': artist}})
+        try:
+            await obito.col.update_one({'_id': int(user_id)}, {'$set': {'artist': artist}})
+        except Exception as e:
+            logging.error(f"Error setting artist for user {user_id}: {e}")
 
     async def get_audio(obito, user_id):
-        user = await obito.col.find_one({'_id': int(user_id)})
-        return user.get('audio', 'By @Animes_Sub_Society')
+        try:
+            user = await obito.col.find_one({'_id': int(user_id)})
+            return user.get('audio', None) if user else None
+        except Exception as e:
+            logging.error(f"Error getting audio for user {user_id}: {e}")
+            return None
 
     async def set_audio(obito, user_id, audio):
-        await obito.col.update_one({'_id': int(user_id)}, {'$set': {'audio': audio}})
+        try:
+            await obito.col.update_one({'_id': int(user_id)}, {'$set': {'audio': audio}})
+        except Exception as e:
+            logging.error(f"Error setting audio for user {user_id}: {e}")
 
     async def get_subtitle(obito, user_id):
-        user = await obito.col.find_one({'_id': int(user_id)})
-        return user.get('subtitle', 'By @Animes_Sub_Society')
+        try:
+            user = await obito.col.find_one({'_id': int(user_id)})
+            return user.get('subtitle', None) if user else None
+        except Exception as e:
+            logging.error(f"Error getting subtitle for user {user_id}: {e}")
+            return None
 
     async def set_subtitle(obito, user_id, subtitle):
-        await obito.col.update_one({'_id': int(user_id)}, {'$set': {'subtitle': subtitle}})
+        try:
+            await obito.col.update_one({'_id': int(user_id)}, {'$set': {'subtitle': subtitle}})
+        except Exception as e:
+            logging.error(f"Error setting subtitle for user {user_id}: {e}")
 
     async def get_video(obito, user_id):
-        user = await obito.col.find_one({'_id': int(user_id)})
-        return user.get('video', 'Encoded By @Animes_Sub_Society')
+        try:
+            user = await obito.col.find_one({'_id': int(user_id)})
+            return user.get('video', None) if user else None
+        except Exception as e:
+            logging.error(f"Error getting video for user {user_id}: {e}")
+            return None
 
     async def set_video(obito, user_id, video):
-        await obito.col.update_one({'_id': int(user_id)}, {'$set': {'video': video}})
+        try:
+            await obito.col.update_one({'_id': int(user_id)}, {'$set': {'video': video}})
+        except Exception as e:
+            logging.error(f"Error setting video for user {user_id}: {e}")
 
-    # Asynchronous methods for rename mode
     async def set_user_choice(obito, user_id: int, rename_mode: str) -> bool:
-        """
-        Save user's rename mode choice and add extra name 'obito' in MongoDB
-        """
         for attempt in range(3):
             try:
                 await obito.col.update_one(
@@ -238,9 +299,6 @@ class Database:
                     return False
 
     async def get_user_choice(obito, user_id: int) -> Optional[str]:
-        """
-        Retrieve user's rename mode from MongoDB
-        """
         try:
             user = await obito.col.find_one({"_id": user_id})
             rename_mode = user.get("rename_mode") if user else None
@@ -251,9 +309,6 @@ class Database:
             return None
 
     async def delete_user_choice(obito, user_id: int) -> bool:
-        """
-        Delete user's rename mode from MongoDB after processing
-        """
         try:
             result = await obito.col.update_one(
                 {"_id": user_id},
@@ -266,13 +321,13 @@ class Database:
             return False
 
     async def send_to_dump_channel(obito, client, file_path: str, caption: str = None) -> bool:
-        """
-        Send a file to DUMP_CHANNEL
-        """
         if not obito.dump_channel:
             logging.warning("DUMP_CHANNEL not configured")
             return False
         try:
+            if not os.path.exists(file_path):
+                logging.error(f"File {file_path} does not exist for DUMP_CHANNEL")
+                return False
             await client.send_document(
                 chat_id=obito.dump_channel,
                 document=file_path,
