@@ -51,15 +51,6 @@ QUALITY_PATTERNS = [
     (re.compile(r'\[(\d{3,4}[pi])\]', re.IGNORECASE), lambda m: m.group(1))
 ]
 
-def sanitize_filename(filename, keep_extension=True):
-    if not filename:
-        return "unnamed_file"
-    name, ext = os.path.splitext(filename) if keep_extension else (filename, "")
-    clean = re.sub(r'[^a-zA-Z0-9\s\-\[\]\(\)\.]', '_', name)
-    clean = re.sub(r'\s+', ' ', clean).strip('_ ')
-    clean = clean.replace('..', '.').replace('__', '_')
-    return f"{clean}{ext}"[:100]
-
 def extract_metadata(input_text, rename_mode):
     if not input_text:
         logger.warning(f"No input text for rename_mode {rename_mode}")
