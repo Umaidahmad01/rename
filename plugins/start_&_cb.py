@@ -6,7 +6,7 @@ from helper.database import *
 from config import *
 import logging
 from typing import List, Optional
-from pyrogram.errors import MessageNotModified
+from pyrogram.errors import FloodWait, MessageNotModified, ChatAdminRequired
 import os
 import asyncio
 
