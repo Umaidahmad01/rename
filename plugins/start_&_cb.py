@@ -5,12 +5,16 @@ from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, 
 from helper.database import *
 from config import *
 import logging
+from typing import List, Optional
+from pyrogram.errors import MessageNotModified
+import os
+import asyncio
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
 # Initialize MongoDB
-db: Database = Database(DB_URL, DB_NAME)
+db: Database = Database()
 
 # Start Command Handler
 @Client.on_message(filters.private & filters.command("start"))
@@ -248,6 +252,8 @@ async def help_command(client, message):
         ])
     )
 
+### /extraction 
+
 @Client.on_message(filters.command("extraction") & filters.private)
 async def extraction_command(client: Client, message: Message) -> None:
     keyboard: List[List[InlineKeyboardButton]] = [
@@ -265,33 +271,74 @@ async def extraction_command(client: Client, message: Message) -> None:
 async def handle_callback(client: Client, callback_query: CallbackQuery) -> None:
     try:
         choice: str = callback_query.data
+        if not choice:
+            logging.error(f"No callback data for user {callback_query.from_user.id}")
+            await callback_query.message.reply_text("Error: No option selected.")
+            await callback_query.answer("Invalid selection!")
+            return
+
         if choice not in ["filename", "filecaption"]:
+            logging.error(f"Invalid callback data '{choice}' for user {callback_query.from_user.id}")
             await callback_query.message.reply_text("Error: Invalid option selected.")
             await callback_query.answer("Unknown option!")
             return
 
         user_id: int = callback_query.from_user.id
+        logging.info(f"Processing callback '{choice}' for user {user_id}")
+
+        # Check reply_markup
+        if not callback_query.message.reply_markup or not hasattr(callback_query.message.reply_markup, 'inline_keyboard'):
+            logging.error(f"No inline keyboard found for user {user_id}")
+            await callback_query.message.reply_text("Error: Button markup is missing.")
+            await callback_query.answer("Keyboard error!")
+            return
 
         # Update keyboard with checkmark
         original_keyboard: List[List[InlineKeyboardButton]] = callback_query.message.reply_markup.inline_keyboard
         updated_keyboard: List[List[InlineKeyboardButton]] = []
+        button_found = False
         for row in original_keyboard:
             updated_row: List[InlineKeyboardButton] = []
             for button in row:
                 if button.callback_data == choice:
-                    updated_row.append(InlineKeyboardButton(f"{button.text} ✅", callback_data=button.callback_data))
+                    button_found = True
+                    updated_row.append(InlineKeyboardButton(f"{button.text.rstrip(' ✅')} ✅", callback_data=button.callback_data))
                 else:
-                    updated_row.append(button)
+                    updated_row.append(InlineKeyboardButton(button.text.rstrip(' ✅'), callback_data=button.callback_data))
             updated_keyboard.append(updated_row)
 
-        await callback_query.message.edit_reply_markup(
-            reply_markup=InlineKeyboardMarkup(updated_keyboard)
-        )
+        if not button_found:
+            logging.error(f"Button with callback '{choice}' not found for user {user_id}")
+            await callback_query.message.reply_text("Error: Button not found.")
+            await callback_query.answer("Button error!")
+            return
+
+        logging.info(f"New keyboard for user {user_id}: {[[button.text for button in row] for row in updated_keyboard]}")
+
+        # Try editing keyboard with retry
+        for attempt in range(3):
+            try:
+                await callback_query.message.edit_reply_markup(
+                    reply_markup=InlineKeyboardMarkup(updated_keyboard)
+                )
+                logging.info(f"Keyboard updated successfully for user {user_id}")
+                break
+            except MessageNotModified:
+                logging.warning(f"Keyboard unchanged for user {user_id}, attempt {attempt+1}")
+                break
+            except Exception as e:
+                logging.error(f"Keyboard update failed for user {user_id}, attempt {attempt+1}: {str(e)}")
+                if attempt == 2:
+                    await callback_query.message.reply_text(f"Error updating buttons: {str(e)}")
+                    await callback_query.answer("Failed to update buttons!")
+                    return
+                await asyncio.sleep(1)  # Wait before retry
 
         # Save choice to database
         if choice == "filename":
             success = await db.set_user_choice(user_id, "filename")
             if not success:
+                logging.error(f"Failed to save filename choice for user {user_id}")
                 await callback_query.message.reply_text("Error: Failed to save your choice.")
                 await callback_query.answer("Database error!")
                 return
@@ -300,6 +347,7 @@ async def handle_callback(client: Client, callback_query: CallbackQuery) -> None
         elif choice == "filecaption":
             success = await db.set_user_choice(user_id, "filecaption")
             if not success:
+                logging.error(f"Failed to save filecaption choice for user {user_id}")
                 await callback_query.message.reply_text("Error: Failed to save your choice.")
                 await callback_query.answer("Database error!")
                 return
@@ -324,6 +372,7 @@ async def handle_file(client: Client, message: Message) -> None:
     new_name: str = ""
 
     try:
+        logging.info(f"Processing file for user {user_id} with rename_mode {rename_mode}")
         if rename_mode == "filename":
             new_name = file.file_name or f"unnamed_{user_id}.bin"
             await message.reply_text(f"Renaming file using filename: {new_name}")
@@ -338,22 +387,39 @@ async def handle_file(client: Client, message: Message) -> None:
                 new_name = file.file_name or f"unnamed_{user_id}.bin"
                 await message.reply_text("No caption provided, using filename instead.")
 
-        file_path: str = await client.download_media(file)
+        logging.info(f"Downloading file {file.file_name} for user {user_id}")
+        try:
+            file_path: str = await client.download_media(file)
+        except Exception as e:
+            logging.error(f"Download error for user {user_id}: {str(e)}")
+            await message.reply_text(f"Error downloading file: {str(e)}")
+            return
+
         renamed_file_path: str = f"downloads/{new_name}"
+        logging.info(f"Renaming file to {renamed_file_path}")
 
         os.makedirs("downloads", exist_ok=True)
         os.rename(file_path, renamed_file_path)
 
-        await client.send_document(
-            chat_id=message.chat.id,
-            document=renamed_file_path,
-            file_name=new_name
-        )
+        logging.info(f"Uploading renamed file {new_name} for user {user_id}")
+        try:
+            await client.send_document(
+                chat_id=message.chat.id,
+                document=renamed_file_path,
+                file_name=new_name
+            )
+        except Exception as e:
+            logging.error(f"Upload error for user {user_id}: {str(e)}")
+            await message.reply_text(f"Error uploading file: {str(e)}")
+            return
 
         os.remove(renamed_file_path)
         await db.delete_user_choice(user_id)
+        logging.info(f"File processed and choice deleted for user {user_id}")
 
     except Exception as e:
-        logging.error(f"File handling error for user {user_id}: {str(e)}")
-        await message.reply_text(f"Error while processing file: {str(e)}")
-        
+        logging.error(f"Processing error for user {user_id}: {str(e)}")
+        if "ffmpeg" in str(e).lower():
+            await message.reply_text("Error: FFmpeg is not installed. Please contact the bot admin. @i_killed_my_clan")
+        else:
+            await message.reply_text(f"Error while processing file: {str(e)}")
