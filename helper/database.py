@@ -40,10 +40,19 @@ class Database:
     async def migrate_metadata(obito):
         try:
             result = await obito.col.update_many(
-                {"metadata": {"$ne": False}},
-                {"$set": {"metadata": False}}
+                {},
+                {"$set": {
+                    "metadata": False,
+                    "title": None,
+                    "artist": None,
+                    "author": None,
+                    "video": None,
+                    "audio": None,
+                    "subtitle": None,
+                    "telegram_handle": None
+                }}
             )
-            logging.info(f"Migrated {result.modified_count} users to metadata=False")
+            logging.info(f"Reset metadata for {result.modified_count} users")
         except Exception as e:
             logging.error(f"Error migrating metadata: {e}")
 
@@ -56,6 +65,8 @@ class Database:
             metadata=False,
             metadata_code="Telegram : @Codeflix_Bots",
             format_template=None,
+            telegram_handle=None,
+            uploads=[],
             ban_status=dict(
                 is_banned=False,
                 ban_duration=0,
@@ -264,17 +275,27 @@ class Database:
             logging.error(f"Error setting video for user {user_id}: {e}")
 
     async def set_user_choice(obito, user_id: int, rename_mode: str) -> bool:
-        try:
-            await obito.col.update_one(
-                {"_id": user_id},
-                {"$set": {"rename_mode": rename_mode}},
-                upsert=True
-            )
-            logging.info(f"Saved rename_mode '{rename_mode}' for user {user_id}")
-            return True
-        except Exception as e:
-            logging.error(f"Error saving user choice for {user_id}: {str(e)}")
-            return False
+        for attempt in range(3):
+            try:
+                await obito.col.update_one(
+                    {"_id": user_id},
+                    {
+                        "$set": {
+                            "rename_mode": rename_mode,
+                            "extra_name": "obito",
+                            "updated_at": datetime.datetime.utcnow()
+                        }
+                    },
+                    upsert=True
+                )
+                logging.info(f"Saved rename_mode '{rename_mode}' for user {user_id}")
+                return True
+            except Exception as e:
+                logging.error(f"Error saving user choice for {user_id}, attempt {attempt+1}: {str(e)}")
+                if attempt < 2:
+                    await asyncio.sleep(1)
+                else:
+                    return False
 
     async def get_user_choice(obito, user_id: int) -> Optional[str]:
         try:
@@ -290,13 +311,50 @@ class Database:
         try:
             result = await obito.col.update_one(
                 {"_id": user_id},
-                {"$unset": {"rename_mode": ""}}
+                {"$unset": {"rename_mode": "", "extra_name": "", "updated_at": ""}}
             )
             logging.info(f"Deleted rename_mode for user {user_id}")
             return result.modified_count > 0
         except Exception as e:
             logging.error(f"Error deleting user choice for {user_id}: {str(e)}")
             return False
+
+    async def add_upload(obito, user_id: int, file_name: str):
+        try:
+            await obito.col.update_one(
+                {"_id": user_id},
+                {"$push": {"uploads": {"file_name": file_name, "date": datetime.datetime.utcnow()}}}
+            )
+            logging.info(f"Added upload '{file_name}' for user {user_id}")
+        except Exception as e:
+            logging.error(f"Error adding upload for user {user_id}: {e}")
+
+    async def get_uploads(obito, user_id: int):
+        try:
+            user = await obito.col.find_one({"_id": user_id})
+            return user.get("uploads", []) if user else []
+        except Exception as e:
+            logging.error(f"Error getting uploads for user {user_id}: {e}")
+            return []
+
+    async def set_telegram_handle(obito, user_id: int, handle: str):
+        try:
+            handle = handle.strip() if handle else None
+            await obito.col.update_one(
+                {"_id": user_id},
+                {"$set": {"telegram_handle": handle}}
+            )
+            logging.info(f"Set telegram_handle '{handle}' for user {user_id}")
+        except Exception as e:
+            logging.error(f"Error setting telegram_handle for user {user_id}: {e}")
+
+    async def get_telegram_handle(obito, user_id: int):
+        try:
+            user = await obito.col.find_one({"_id": user_id})
+            return user.get("telegram_handle", None) if user else None
+        except Exception as e:
+            logging.error(f"Error getting telegram_handle for user {user_id}: {e}")
+            return None
 
     async def send_to_dump_channel(obito, client, file_path: str, caption: str = None) -> bool:
         if not obito.dump_channel:
