@@ -44,6 +44,10 @@ QUALITY_PATTERNS = [
     (re.compile(r'\[(\d{3,4}[pi])\]', re.IGNORECASE), lambda m: m.group(1))
 ]
 
+def sanitize_filename(filename):
+    """Remove unsafe characters from filename."""
+    return re.sub(r'[^a-zA-Z0-9\s\-\[\]\(\)\.]', '_', filename).replace('  ', ' ').strip()
+
 def extract_season_episode(input_text, rename_mode):
     if not input_text:
         logger.warning(f"No input text for rename_mode {rename_mode}")
@@ -97,28 +101,25 @@ async def add_metadata(input_path, output_path, user_id):
     
     try:
         metadata = {
-            'title': await codeflixbots.get_title(user_id) or "Unknown",
-            'artist': await codeflixbots.get_artist(user_id) or "Unknown",
-            'author': await codeflixbots.get_author(user_id) or "Unknown",
-            'video_title': await codeflixbots.get_video(user_id) or "Unknown",
-            'audio_title': await codeflixbots.get_audio(user_id) or "Unknown",
-            'subtitle': await codeflixbots.get_subtitle(user_id) or "Unknown"
+            'title': await codeflixbots.get_title(user_id),
+            'artist': await codeflixbots.get_artist(user_id),
+            'author': await codeflixbots.get_author(user_id),
+            'video_title': await codeflixbots.get_video(user_id),
+            'audio_title': await codeflixbots.get_audio(user_id),
+            'subtitle': await codeflixbots.get_subtitle(user_id)
         }
-        
-        cmd = [
-            ffmpeg,
-            '-i', input_path,
-            '-metadata', f'title={metadata["title"]}',
-            '-metadata', f'artist={metadata["artist"]}',
-            '-metadata', f'author={metadata["author"]}',
-            '-metadata:s:v', f'title={metadata["video_title"]}',
-            '-metadata:s:a', f'title={metadata["audio_title"]}',
-            '-metadata:s:s', f'title={metadata["subtitle"]}',
-            '-map', '0',
-            '-c', 'copy',
-            '-loglevel', 'error',
-            output_path
-        ]
+        cmd = [ffmpeg, '-i', input_path, '-map', '0', '-c', 'copy', '-loglevel', 'error']
+        for key, value in metadata.items():
+            if value:
+                if key == 'video_title':
+                    cmd.extend(['-metadata:s:v', f'title={value}'])
+                elif key == 'audio_title':
+                    cmd.extend(['-metadata:s:a', f'title={value}'])
+                elif key == 'subtitle':
+                    cmd.extend(['-metadata:s:s', f'title={value}'])
+                else:
+                    cmd.extend(['-metadata', f'{key}={value}'])
+        cmd.append(output_path)
         
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -130,6 +131,9 @@ async def add_metadata(input_path, output_path, user_id):
         if process.returncode != 0:
             logger.error(f"FFmpeg error: {stderr.decode()}")
             raise RuntimeError(f"FFmpeg error: {stderr.decode()}")
+        if not os.path.exists(output_path):
+            logger.error(f"Output file {output_path} not created")
+            raise RuntimeError(f"Output file {output_path} not created")
     except Exception as e:
         logger.error(f"Metadata processing failed: {e}")
         raise
@@ -186,11 +190,12 @@ async def process_file(client, message):
                 'QUALITY': quality
             }
             
+            new_template = format_template
             for placeholder, value in replacements.items():
-                format_template = format_template.replace(placeholder, value)
+                new_template = new_template.replace(placeholder, value)
 
             ext = os.path.splitext(file_name)[1] or ('.mp4' if media_type == "video" else '.mp3')
-            new_filename = f"{format_template}{ext}"
+            new_filename = sanitize_filename(f"{new_template}{ext}")
             download_path = f"downloads/{new_filename}"
             metadata_path = f"metadata/{new_filename}"
             
@@ -222,15 +227,21 @@ async def process_file(client, message):
                 await send_log(client, message.from_user, f"Download failed: {str(e)}")
                 return
 
-            await msg.edit("**Processing metadata...**")
-            try:
-                await add_metadata(file_path, metadata_path, user_id)
-                file_path = metadata_path
-            except Exception as e:
-                logger.error(f"Metadata processing failed for user {user_id}: {e}")
-                await msg.edit(f"Metadata processing failed: {e}")
-                await send_log(client, message.from_user, f"Metadata processing failed: {str(e)}")
-                return
+            metadata_enabled = await codeflixbots.get_metadata(user_id)
+            if metadata_enabled:
+                await msg.edit("**Processing metadata...**")
+                try:
+                    await add_metadata(file_path, metadata_path, user_id)
+                    if os.path.exists(metadata_path):
+                        file_path = metadata_path
+                    else:
+                        logger.warning(f"Metadata file {metadata_path} not found, using {file_path}")
+                except Exception as e:
+                    logger.error(f"Metadata processing failed for user {user_id}: {e}")
+                    await msg.edit(f"Metadata processing failed, proceeding without metadata: {e}")
+                    await send_log(client, message.from_user, f"Metadata processing failed: {str(e)}")
+            else:
+                logger.info(f"Metadata disabled for user {user_id}")
 
             await msg.edit("**Sending to dump channel...**")
             try:
@@ -246,7 +257,7 @@ async def process_file(client, message):
 
             if thumb:
                 thumb_path = await client.download_media(thumb)
-            elif media_type == "video" and message.video.thumbs:
+            elif media_type == "video" and message.video and message.video.thumbs:
                 thumb_path = await client.download_media(message.video.thumbs[0].file_id)
             
             thumb_path = await process_thumbnail(thumb_path)
@@ -307,7 +318,7 @@ async def process_file(client, message):
                 base_name = input_text or f"unnamed_{user_id}"
 
             extension = file.file_name.split('.')[-1] if '.' in file.file_name else 'bin'
-            new_name = f"{base_name}.{extension}"
+            new_name = sanitize_filename(f"{base_name}.{extension}")
             await message.reply_text(f"Renaming using {rename_mode}: {new_name}")
 
             logger.info(f"Downloading {file.file_name} for user {user_id}")
@@ -521,6 +532,20 @@ async def clear_tasks(client: Client, message: Message) -> None:
         logger.error(f"Error clearing tasks for user {user_id}: {e}")
         await message.reply_text("Error: Couldn't clear tasks.")
         await send_log(client, message.from_user, f"Clear command error: {str(e)}")
+
+@Client.on_message(filters.command("metadata") & filters.private)
+async def toggle_metadata(client: Client, message: Message) -> None:
+    user_id = message.from_user.id
+    try:
+        current = await codeflixbots.get_metadata(user_id)
+        new_value = not current
+        await codeflixbots.set_metadata(user_id, new_value)
+        await message.reply_text(f"Metadata turned {'ON' if new_value else 'OFF'}")
+        await send_log(client, message.from_user, f"Metadata set to {new_value}")
+    except Exception as e:
+        logger.error(f"Error toggling metadata for user {user_id}: {e}")
+        await message.reply_text("Error: Couldn't toggle metadata.")
+        await send_log(client, message.from_user, f"Metadata toggle error: {str(e)}")
 
 @Client.on_message(filters.private & (filters.document | filters.video | filters.audio))
 async def auto_rename_files(client, message):
