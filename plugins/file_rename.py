@@ -294,6 +294,7 @@ async def process_file(client, message):
             return
 
         file = message.document
+        file_id = file.file_id
         new_name = ""
         input_text = file.file_name if rename_mode == "filename" else (message.caption or "")
 
@@ -385,6 +386,7 @@ async def process_file(client, message):
             user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
     else:
         await message.reply_text("Use /extraction to set a rename mode.")
+
 
 @Client.on_message(filters.command("extraction") & filters.private)
 async def extraction_command(client: Client, message: Message) -> None:
@@ -479,7 +481,6 @@ async def handle_callback(client: Client, callback_query: CallbackQuery) -> None
                     await callback_query.message.reply_text("Error: Database issue.")
                     await callback_query.answer("Database error!")
                     await send_log(client, callback_query.from_user, f"Database save error: {str(e)}")
-                    return
                 await asyncio.sleep(1)
 
         await callback_query.answer("Option selected!")
@@ -508,8 +509,7 @@ async def clear_tasks(client: Client, message: Message) -> None:
             user_tasks[user_id] = []
             logger.info(f"Cleared {len(tasks)} tasks for user {user_id}")
 
-        # Clear database tasks
-        await codeflixbots.delete_user_tasks(user_id)
+        # Clear rename mode
         await codeflixbots.delete_user_choice(user_id)
         await message.reply_text("All ongoing tasks and settings cleared!")
         await send_log(client, message.from_user, "Cleared all tasks and settings")
@@ -533,8 +533,6 @@ async def auto_rename_files(client, message):
         user_tasks[user_id] = []
 
     try:
-        # Add task to database
-        await codeflixbots.add_task(user_id, file_id, file_name)
         logger.info(f"Processing file {file_id} for user {user_id}")
         await send_log(client, message.from_user, f"Processing file: {file_name}")
         await process_file(client, message)
@@ -542,5 +540,3 @@ async def auto_rename_files(client, message):
         logger.error(f"Error processing file for user {user_id}: {e}")
         await message.reply_text("Error: Couldn't process file.")
         await send_log(client, message.from_user, f"Processing error: {str(e)}")
-
-
