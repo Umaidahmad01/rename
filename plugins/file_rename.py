@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 renaming_operations = {}
 user_tasks = {}
-file_queue = asyncio.Queue()
+file_queue = asyncio.Queue()  # Unlimited queue
 processing_files = set()
 
 SEASON_EPISODE_PATTERNS = [
@@ -60,9 +60,9 @@ def extract_season_episode(input_text, rename_mode):
     logger.warning(f"No season/episode matched for {rename_mode}: {input_text}")
     return None, None
 
-def extract_quality(input_text, rename_mode):
+def extract_quality(filename):
     for pattern, extractor in QUALITY_PATTERNS:
-        match = pattern.search(input_text)
+        match = pattern.search(filename)
         if match:
             quality = extractor(match)
             logger.info(f"Extracted quality: {quality}")
@@ -165,7 +165,8 @@ async def queue_worker(client):
             finally:
                 processing_files.discard(file_id)
                 file_queue.task_done()
-                await codeflixbots.tasks.delete_one({"file_id": file_id})
+                # Delete specific user task
+                await codeflixbots.tasks.delete_one({"user_id": user_id, "file_id": file_id})
                 
         except asyncio.CancelledError:
             logger.info("Queue worker cancelled")
@@ -214,8 +215,8 @@ async def process_file(client, message):
         renaming_operations[file_id] = datetime.now()
 
         try:
-            season, episode = extract_season_episode(input_text, rename_mode, "input_text, rename_mode")
-            quality = extract_quality(input_text, rename_mode)
+            season, episode = extract_season_episode(file_name, "filename")
+            quality = extract_quality(file_name)
             
             replacements = {
                 '{season}': season or 'XX',
@@ -335,7 +336,7 @@ async def process_file(client, message):
 
         file = message.document
         new_name = ""
-        input_text = file.file_name if rename_mode == "input_text, rename_mode" else (message.caption or "")
+        input_text = file.file_name if rename_mode == "filename" else (message.caption or "")
 
         try:
             logger.info(f"Processing file for user {user_id} with rename_mode {rename_mode}")
@@ -520,7 +521,6 @@ async def handle_callback(client: Client, callback_query: CallbackQuery) -> None
                     await callback_query.message.reply_text("Error: Database issue.")
                     await callback_query.answer("Database error!")
                     await send_log(client, callback_query.from_user, f"Database save error: {str(e)}")
-                    return
                 await asyncio.sleep(1)
 
         await callback_query.answer("Option selected!")
@@ -591,7 +591,6 @@ async def auto_rename_files(client, message):
         # Add task to database
         await codeflixbots.add_task(user_id, file_id, file_name)
         await file_queue.put(message)
-        await message.reply_text(f"File added to queue. Position: {file_queue.qsize()}")
         logger.info(f"Queued file {file_id} for user {user_id}, queue size: {file_queue.qsize()}")
         await send_log(client, message.from_user, f"Queued file: {file_name}")
     except Exception as e:
