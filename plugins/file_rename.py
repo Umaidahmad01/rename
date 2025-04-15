@@ -115,7 +115,7 @@ async def add_metadata(input_path, output_path, user_id):
             'audio_title': await codeflixbots.get_audio(user_id),
             'subtitle': await codeflixbots.get_subtitle(user_id)
         }
-        cmd = [ffmpeg, '-i', input_path, '-map', '0', '-c', 'copy', '-loglevel', 'error']
+        cmd = [ffmpeg, '-i', input_path, '-map', '0', '-c', 'copy', '-loglevel', "error"]
         has_metadata = False
         for key, value in metadata.items():
             if value:
@@ -263,17 +263,6 @@ async def process_file(client, message):
             else:
                 logger.info(f"Metadata disabled for user {user_id}")
 
-            await msg.edit("**Sending to dump channel...**")
-            try:
-                if os.path.exists(file_path):
-                    await codeflixbots.send_to_dump_channel(client, file_path, f"Renamed: {new_filename}")
-                else:
-                    logger.error(f"File {file_path} does not exist for dump channel")
-                    await send_log(client, message.from_user, f"Dump channel failed: File {file_path} missing")
-            except Exception as e:
-                logger.error(f"Dump channel send failed for user {user_id}: {e}")
-                await send_log(client, message.from_user, f"Dump channel send failed: {str(e)}")
-
             await msg.edit("**Preparing upload...**")
             caption = await codeflixbots.get_caption(user_id) or f"**{new_filename}**"
             thumb = await codeflixbots.get_thumbnail(user_id)
@@ -319,6 +308,18 @@ async def process_file(client, message):
                 await msg.edit(f"Upload failed: {e}")
                 await send_log(client, message.from_user, f"Upload failed: {str(e)}")
                 return
+
+            # Send to dump channel *after* successful upload to user
+            await msg.edit("**Sending to dump channel...**")
+            try:
+                if os.path.exists(file_path):
+                    await codeflixbots.send_to_dump_channel(client, file_path, f"Renamed: {new_filename}")
+                else:
+                    logger.error(f"File {file_path} does not exist for dump channel")
+                    await send_log(client, message.from_user, f"Dump channel failed: File {file_path} missing")
+            except Exception as e:
+                logger.error(f"Dump channel send failed for user {user_id}: {e}")
+                await send_log(client, message.from_user, f"Dump channel send failed: {str(e)}")
 
         except Exception as e:
             logger.error(f"Processing error for user {user_id}: {e}")
@@ -376,17 +377,6 @@ async def process_file(client, message):
             os.makedirs("downloads", exist_ok=True)
             os.rename(file_path, renamed_file_path)
 
-            logger.info(f"Sending {new_name} to dump channel for user {user_id}")
-            try:
-                if os.path.exists(renamed_file_path):
-                    await codeflixbots.send_to_dump_channel(client, renamed_file_path, f"Renamed: {new_name}")
-                else:
-                    logger.error(f"File {renamed_file_path} does not exist for dump channel")
-                    await send_log(client, message.from_user, f"Dump channel failed: File {renamed_file_path} missing")
-            except Exception as e:
-                logger.error(f"Dump channel send failed for user {user_id}: {e}")
-                await send_log(client, message.from_user, f"Dump channel send failed: {str(e)}")
-
             logger.info(f"Uploading {new_name} for user {user_id}")
             if not os.path.exists(renamed_file_path):
                 logger.error(f"Upload failed: File {renamed_file_path} does not exist")
@@ -417,6 +407,18 @@ async def process_file(client, message):
                 await send_log(client, message.from_user, f"Upload error: {str(e)}")
                 return
 
+            # Send to dump channel *after* successful upload to user
+            logger.info(f"Sending {new_name} to dump channel for user {user_id}")
+            try:
+                if os.path.exists(renamed_file_path):
+                    await codeflixbots.send_to_dump_channel(client, renamed_file_path, f"Renamed: {new_name}")
+                else:
+                    logger.error(f"File {renamed_file_path} does not exist for dump channel")
+                    await send_log(client, message.from_user, f"Dump channel failed: File {renamed_file_path} missing")
+            except Exception as e:
+                logger.error(f"Dump channel send failed for user {user_id}: {e}")
+                await send_log(client, message.from_user, f"Dump channel send failed: {str(e)}")
+
             os.remove(renamed_file_path)
             await codeflixbots.delete_user_choice(user_id)
             logger.info(f"File processed, choice deleted for user {user_id}")
@@ -436,7 +438,8 @@ async def process_file(client, message):
         finally:
             user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
     else:
-        await message.reply_text("Use /extraction to set a rename mode.")
+
+    await message.reply_text("Use /extraction to set a rename mode.")
 
 @Client.on_message(filters.command("extraction") & filters.private)
 async def extraction_command(client: Client, message: Message) -> None:
@@ -464,107 +467,70 @@ async def extraction_command(client: Client, message: Message) -> None:
 async def handle_callback(client: Client, callback_query: CallbackQuery) -> None:
     user_id = callback_query.from_user.id
     choice = callback_query.data
-    logger.info(f"Raw callback data for user {user_id}: '{choice}'")
+    logger.info(f"Callback data for user {user_id}: '{choice}'")
 
     try:
-        # Only handle extraction-related callbacks
-        if not choice or not choice.startswith("extract_"):
-            logger.debug(f"Ignoring unrelated callback for user {user_id}: '{choice}'")
-            return  # Silently ignore non-extraction callbacks
-
-        # Normalize choice
-        choice = str(choice).lower().strip()
-        valid_choices = ["extract_filename", "extract_filecaption"]
+        # Define valid choices
         choice_map = {
             "extract_filename": "filename",
             "extract_filecaption": "filecaption"
         }
 
-        if choice not in valid_choices:
-            logger.error(f"Invalid extraction callback for user {user_id}: '{choice}'")
-            # Refresh keyboard
-            keyboard = [
-                [InlineKeyboardButton("Filename", callback_data="extract_filename")],
-                [InlineKeyboardButton("Filecaption", callback_data="extract_filecaption")]
-            ]
-            await callback_query.message.edit_reply_markup(InlineKeyboardMarkup(keyboard))
-            await callback_query.message.reply_text("Please select a valid option (Filename or Filecaption).")
-            await callback_query.answer("Invalid selection, try again!")
-            await send_log(client, callback_query.from_user, f"Invalid extraction callback: '{choice}'")
+        if choice not in choice_map:
+            logger.warning(f"Invalid callback for user {user_id}: '{choice}'")
+            await callback_query.answer("Invalid option!", show_alert=True)
             return
 
-        # Map to database value
+        # Get the rename mode
         db_choice = choice_map[choice]
 
-        if not callback_query.message.reply_markup or not hasattr(callback_query.message.reply_markup, 'inline_keyboard'):
-            logger.error(f"No keyboard for user {user_id}")
-            await callback_query.message.reply_text("Error: Buttons missing, please use /extraction again.")
-            await callback_query.answer("Keyboard error!")
-            await send_log(client, callback_query.from_user, "Callback error: No keyboard")
-            return
-
+        # Update keyboard to reflect selection
         updated_keyboard = [
             [InlineKeyboardButton("Filename ✅" if db_choice == "filename" else "Filename", callback_data="extract_filename")],
             [InlineKeyboardButton("Filecaption ✅" if db_choice == "filecaption" else "Filecaption", callback_data="extract_filecaption")]
         ]
-        logger.info(f"Updating keyboard for user {user_id}: {[[b.text for b in r] for r in updated_keyboard]}")
 
-        for attempt in range(3):
-            try:
-                await callback_query.message.edit_reply_markup(InlineKeyboardMarkup(updated_keyboard))
-                logger.info(f"Keyboard updated for user {user_id}")
-                break
-            except MessageNotModified:
-                logger.warning(f"Keyboard unchanged for user {user_id}, attempt {attempt+1}")
-                break
-            except ChatAdminRequired:
-                logger.error(f"ChatAdminRequired for keyboard update")
-                await callback_query.message.reply_text("Error: Bot lacks admin rights.")
-                await callback_query.answer("Admin error!")
-                await send_log(client, callback_query.from_user, "Keyboard update failed: Bot lacks admin rights")
-                return
-            except Exception as e:
-                logger.error(f"Keyboard update failed for user {user_id}, attempt {attempt+1}: {e}")
-                if attempt == 2:
-                    await callback_query.message.reply_text("Error: Couldn't update buttons.")
-                    await callback_query.answer("Update failed!")
-                    await send_log(client, callback_query.from_user, f"Keyboard update error: {str(e)}")
-                    return
-                await asyncio.sleep(1)
+        try:
+            await callback_query.message.edit_reply_markup(InlineKeyboardMarkup(updated_keyboard))
+            logger.info(f"Updated keyboard for user {user_id}")
+        except MessageNotModified:
+            logger.debug(f"Keyboard unchanged for user {user_id}")
+        except ChatAdminRequired:
+            logger.error(f"ChatAdminRequired for keyboard update")
+            await callback_query.message.reply_text("Error: Bot lacks admin rights.")
+            await callback_query.answer("Admin error!", show_alert=True)
+            await send_log(client, callback_query.from_user, "Keyboard update failed: Bot lacks admin rights")
+            return
+        except Exception as e:
+            logger.error(f"Keyboard update failed for user {user_id}: {e}")
+            await callback_query.message.reply_text("Error: Couldn't update buttons.")
+            await send_log(client, callback_query.from_user, f"Keyboard update error: {str(e)}")
+            return
 
-        for attempt in range(3):
-            try:
-                success = await codeflixbots.set_user_choice(user_id, db_choice)
-                if not success:
-                    logger.error(f"Failed to save choice '{db_choice}' for user {user_id}")
-                    await callback_query.message.reply_text("Error: Couldn't save choice.")
-                    await callback_query.answer("Database error!")
-                    await send_log(client, callback_query.from_user, f"Failed to save choice: {db_choice}")
-                    return
-                logger.info(f"Saved choice '{db_choice}' for user {user_id}")
-                await callback_query.message.reply_text(
-                    f"Please send the file to rename using its {db_choice}."
-                )
-                await send_log(client, callback_query.from_user, f"Selected rename mode: {db_choice}")
-                break
-            except Exception as e:
-                logger.error(f"Database save failed for user {user_id}, attempt {attempt+1}: {e}")
-                if attempt == 2:
-                    await callback_query.message.reply_text("Error: Database issue.")
-                    await callback_query.answer("Database error!")
-                    await send_log(client, callback_query.from_user, f"Database save error: {str(e)}")
-                await asyncio.sleep(1)
+        # Save the user's choice
+        success = await codeflixbots.set_user_choice(user_id, db_choice)
+        if not success:
+            logger.error(f"Failed to save choice '{db_choice}' for user {user_id}")
+            await callback_query.message.reply_text("Error: Couldn't save your choice.")
+            await callback_query.answer("Database error!", show_alert=True)
+            await send_log(client, callback_query.from_user, f"Failed to save choice: {db_choice}")
+            return
 
+        await callback_query.message.reply_text(
+            f"Please send the file to rename using its {db_choice}."
+        )
         await callback_query.answer("Option selected!")
+        await send_log(client, callback_query.from_user, f"Selected rename mode: {db_choice}")
+
     except ChatAdminRequired:
         logger.error(f"ChatAdminRequired in callback")
         await callback_query.message.reply_text("Error: Bot lacks admin rights.")
-        await callback_query.answer("Admin error!")
+        await callback_query.answer("Admin error!", show_alert=True)
         await send_log(client, callback_query.from_user, "Callback failed: Bot lacks admin rights")
     except Exception as e:
         logger.error(f"Callback error for user {user_id}: {e}")
         await callback_query.message.reply_text("Error: Something went wrong.")
-        await callback_query.answer("Error!")
+        await callback_query.answer("Error!", show_alert=True)
         await send_log(client, callback_query.from_user, f"Callback error: {str(e)}")
 
 @Client.on_message(filters.command("clear") & filters.private)
@@ -593,38 +559,3 @@ async def clear_tasks(client: Client, message: Message) -> None:
         logger.error(f"Error clearing tasks for user {user_id}: {e}")
         await message.reply_text("Error: Couldn't clear tasks.")
         await send_log(client, message.from_user, f"Clear command error: {str(e)}")
-
-@Client.on_message(filters.command("metadata") & filters.private)
-async def toggle_metadata(client: Client, message: Message) -> None:
-    user_id = message.from_user.id
-    try:
-        current = await codeflixbots.get_metadata(user_id)
-        new_value = not current
-        await codeflixbots.set_metadata(user_id, new_value)
-        await message.reply_text(f"Metadata turned {'ON' if new_value else 'OFF'}")
-        await send_log(client, message.from_user, f"Metadata set to {new_value}")
-    except Exception as e:
-        logger.error(f"Error toggling metadata for user {user_id}: {e}")
-        await message.reply_text("Error: Couldn't toggle metadata.")
-        await send_log(client, message.from_user, f"Metadata toggle error: {str(e)}")
-
-@Client.on_message(filters.private & (filters.document | filters.video | filters.audio))
-async def auto_rename_files(client, message):
-    user_id = message.from_user.id
-    media = message.document or message.video or message.audio
-    file_id = media.file_id
-    file_name = media.file_name or "unknown"
-
-    if user_id not in user_tasks:
-        user_tasks[user_id] = []
-
-    try:
-        logger.info(f"Processing file {file_id} for user {user_id}")
-        await send_log(client, message.from_user, f"Processing file: {file_name}")
-        await process_file(client, message)
-    except Exception as e:
-        logger.error(f"Error processing file for user {user_id}: {e}")
-        await message.reply_text("Error: Couldn't process file.")
-        await send_log(client, message.from_user, f"Processing error: {str(e)}")
-
-
