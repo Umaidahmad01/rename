@@ -25,7 +25,14 @@ logger = logging.getLogger(__name__)
 renaming_operations = {}
 user_tasks = {}
 
-SEASON_EPISODE_PATTERNS = [
+# Patterns for extracting volume, chapter, season, episode
+METADATA_PATTERNS = [
+    # Manga-specific: Volume and Chapter
+    (re.compile(r'(?:Vol|Volume|V)\s*(\d+)', re.IGNORECASE), ('volume', None)),
+    (re.compile(r'(?:Ch|Chapter|C)\s*(\d+)', re.IGNORECASE), (None, 'chapter')),
+    (re.compile(r'V(\d+)[^\d]*C(\d+)', re.IGNORECASE), ('volume', 'chapter')),
+    (re.compile(r'Volume\s*(\d+)\s*Chapter\s*(\d+)', re.IGNORECASE), ('volume', 'chapter')),
+    # Video-specific: Season and Episode
     (re.compile(r'S(\d+)(?:E|EP)(\d+)', re.IGNORECASE), ('season', 'episode')),
     (re.compile(r'S(\d+)[\s-]*(?:E|EP)(\d+)', re.IGNORECASE), ('season', 'episode')),
     (re.compile(r'Season\s*(\d+)\s*Episode\s*(\d+)', re.IGNORECASE), ('season', 'episode')),
@@ -44,30 +51,42 @@ QUALITY_PATTERNS = [
     (re.compile(r'\[(\d{3,4}[pi])\]', re.IGNORECASE), lambda m: m.group(1))
 ]
 
-def sanitize_filename(filename):
+def sanitize_filename(filename, keep_extension=True):
     if not filename:
         return "unnamed_file"
-    clean = re.sub(r'[^a-zA-Z0-9\s\-\[\]\(\)\.]', '_', filename)
+    # Split name and extension
+    name, ext = os.path.splitext(filename) if keep_extension else (filename, "")
+    clean = re.sub(r'[^a-zA-Z0-9\s\-\[\]\(\)\.]', '_', name)
     clean = re.sub(r'\s+', ' ', clean).strip('_ ')
     clean = clean.replace('..', '.').replace('__', '_')
-    return clean[:100]
+    return f"{clean}{ext}"[:100]
 
-def extract_season_episode(input_text, rename_mode):
+def extract_metadata(input_text, rename_mode):
     if not input_text:
         logger.warning(f"No input text for rename_mode {rename_mode}")
-        return None, None
-    input_text = str(input_text)  # Ensure string
-    for pattern, (season_group, episode_group) in SEASON_EPISODE_PATTERNS:
+        return None, None, None, None
+    input_text = str(input_text)
+    for pattern, (key1, key2) in METADATA_PATTERNS:
         match = pattern.search(input_text)
         if match:
-            season = match.group(1) if season_group else None
-            episode = match.group(2) if episode_group and len(match.groups()) >= 2 else match.group(1)
-            logger.info(f"Extracted season: {season}, episode: {episode} from {rename_mode}")
-            return season, episode
-    logger.warning(f"No season/episode matched for {rename_mode}: {input_text}")
-    return None, None
+            if key1 == 'volume':
+                volume = match.group(1)
+                chapter = match.group(2) if key2 == 'chapter' and len(match.groups()) >= 2 else None
+                return volume, chapter, None, None
+            elif key1 == 'season':
+                season = match.group(1)
+                episode = match.group(2) if key2 == 'episode' and len(match.groups()) >= 2 else None
+                return None, None, season, episode
+            elif key2 == 'chapter':
+                chapter = match.group(1)
+                return None, chapter, None, None
+            elif key2 == 'episode':
+                episode = match.group(1)
+                return None, None, None, episode
+    logger.warning(f"No metadata matched for {rename_mode}: {input_text}")
+    return None, None, None, None
 
-def extract_quality(filename):
+def extract_quality(input_text, rename_mode):
     if not filename:
         return "Unknown"
     for pattern, extractor in QUALITY_PATTERNS:
@@ -121,25 +140,26 @@ async def add_metadata(input_path, output_path, user_id):
             if value:
                 has_metadata = True
                 if key == 'video_title':
-                    cmd.extend(['-metadata:s:v', f'title={value}'])
+                    cmd.extend(['-metadata:s:v', f'title="{value}"'])
                 elif key == 'audio_title':
-                    cmd.extend(['-metadata:s:a', f'title={value}'])
+                    cmd.extend(['-metadata:s:a', f'title="{value}"'])
                 elif key == 'subtitle':
-                    cmd.extend(['-metadata:s:s', f'title={value}'])
+                    cmd.extend(['-metadata:s:s', f'title="{value}"'])
                 else:
-                    cmd.extend(['-metadata', f'{key}={value}'])
+                    cmd.extend(['-metadata', f'{key}="{value}"'])
         if not has_metadata:
             logger.info(f"No valid metadata for user {user_id}, skipping")
             return False
         cmd.append(output_path)
         
         logger.info(f"Running FFmpeg: {' '.join(cmd)}")
+        start_time = time.time()
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await process.communicate()
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=2.0)
         
         if process.returncode != 0:
             logger.error(f"FFmpeg error (return code {process.returncode}): {stderr.decode()}")
@@ -147,11 +167,35 @@ async def add_metadata(input_path, output_path, user_id):
         if not os.path.exists(output_path):
             logger.error(f"Output file {output_path} not created")
             raise RuntimeError(f"Output file {output_path} not created")
-        logger.info(f"Metadata added to {output_path}")
+        logger.info(f"Metadata added in {time.time() - start_time:.2f}s")
         return True
+    except asyncio.TimeoutError:
+        logger.error(f"Metadata processing timed out")
+        return False
     except Exception as e:
         logger.error(f"Metadata processing failed: {e}")
         raise
+
+async def send_to_dump_channel(client, message, user_id):
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            sent_message = await client.send_document(
+                chat_id=Config.DUMP_CHANNEL,
+                document=message.document.file_id,
+                caption=f"From user {user_id}",
+                disable_notification=True
+            )
+            logger.info(f"Sent file to dump channel for user {user_id} (attempt {attempt + 1})")
+            return sent_message
+        except Exception as e:
+            if "MESSAGE_ID_INVALID" in str(e):
+                logger.warning(f"Retry {attempt + 1}/{max_retries} for MESSAGE_ID_INVALID")
+                await asyncio.sleep(1)
+                continue
+            logger.error(f"Dump channel send failed for user {user_id}: {e}")
+            break
+    return None
 
 @Client.on_message((filters.document | filters.video | filters.audio) & filters.private)
 async def process_file(client, message):
@@ -194,27 +238,44 @@ async def process_file(client, message):
         renaming_operations[file_id] = datetime.now()
 
         try:
-            season, episode = extract_season_episode(file_name, "filename")
+            # Extract metadata from filename or caption
+            input_text = file_name if rename_mode == "filename" else (message.caption or file_name)
+            volume, chapter, season, episode = extract_metadata(input_text, rename_mode)
             quality = extract_quality(file_name)
             
+            # Detect template extension
+            template_ext_match = re.search(r'\.([a-zA-Z0-9]+)$', format_template)
+            template_ext = f".{template_ext_match.group(1)}" if template_ext_match else None
+            original_ext = os.path.splitext(file_name)[1] or ('.mp4' if media_type == "video" else '.mp3')
+
+            # Use template extension if provided, else original
+            target_ext = template_ext if template_ext else original_ext
+            
             replacements = {
+                '{volume}': volume or 'XX',
+                '{chapter}': chapter or 'XX',
                 '{season}': season or 'XX',
                 '{episode}': episode or 'XX',
                 '{quality}': quality,
+                'Volume': volume or 'XX',
+                'Chapter': chapter or 'XX',
                 'Season': season or 'XX',
-                'Episode': season or 'XX',
+                'Episode': episode or 'XX',
                 'QUALITY': quality
             }
             
+            # Remove extension from template for processing
             new_template = format_template
+            if template_ext:
+                new_template = re.sub(r'\.[a-zA-Z0-9]+$', '', format_template)
+            
             for placeholder, value in replacements.items():
                 new_template = new_template.replace(placeholder, str(value))
             
             if not new_template.strip():
                 new_template = f"file_{user_id}"
             
-            ext = os.path.splitext(file_name)[1] or ('.mp4' if media_type == "video" else '.mp3')
-            new_filename = sanitize_filename(f"{new_template}{ext}")
+            new_filename = sanitize_filename(f"{new_template}{target_ext}")
             download_path = f"downloads/{new_filename}"
             metadata_path = f"metadata/{new_filename}"
             
@@ -222,6 +283,7 @@ async def process_file(client, message):
             os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
 
             msg = await message.reply_text("**Downloading...**")
+            start_time = time.time()
             download_task = asyncio.create_task(client.download_media(
                 message,
                 file_name=download_path,
@@ -283,6 +345,7 @@ async def process_file(client, message):
                 await send_log(client, message.from_user, f"Upload failed: File {file_path} missing")
                 return
             
+            upload_start = time.time()
             upload_task = asyncio.create_task(client.send_document(
                 chat_id=message.chat.id,
                 document=file_path,
@@ -293,7 +356,8 @@ async def process_file(client, message):
             ))
             user_tasks[user_id].append(upload_task)
             try:
-                await upload_task
+                sent_message = await upload_task
+                logger.info(f"Uploaded to user in {time.time() - upload_start:.2f}s")
                 await msg.delete()
             except asyncio.CancelledError:
                 logger.info(f"Upload cancelled for user {user_id}")
@@ -310,11 +374,10 @@ async def process_file(client, message):
                 await send_log(client, message.from_user, f"Upload failed: {str(e)}")
                 return
 
-            # Send to dump channel *after* user upload
+ # Send to dump channel in background
             try:
                 if os.path.exists(file_path):
-                    await msg.edit("**Sending to dump channel...**")
-                    await codeflixbots.send_to_dump_channel(client, file_path, f"Renamed: {new_filename}")
+                    asyncio.create_task(send_to_dump_channel(client, sent_message, user_id))
                 else:
                     logger.error(f"File {file_path} does not exist for dump channel")
                     await send_log(client, message.from_user, f"Dump channel failed: File {file_path} missing")
@@ -343,8 +406,10 @@ async def process_file(client, message):
 
         try:
             logger.info(f"Processing file for user {user_id} with rename_mode {rename_mode}")
-            season, episode = extract_seasonhabited_episode(input_text, rename_mode)
-            if season or episode:
+            volume, chapter, season, episode = extract_metadata(input_text, rename_mode)
+            if volume or chapter:
+                base_name = f"Vol{volume or 'XX'}Ch{chapter or 'XX'}"
+            elif season or episode:
                 base_name = f"S{season or 'XX'}E{episode or 'XX'}"
             else:
                 base_name = input_text or f"unnamed_{user_id}"
@@ -392,7 +457,7 @@ async def process_file(client, message):
             ))
             user_tasks[user_id].append(upload_task)
             try:
-                await upload_task
+                sent_message = await upload_task
             except asyncio.CancelledError:
                 logger.info(f"Upload cancelled for user {user_id}")
                 await message.reply_text("Task cancelled.")
@@ -408,11 +473,11 @@ async def process_file(client, message):
                 await send_log(client, message.from_user, f"Upload error: {str(e)}")
                 return
 
-            # Send to dump channel *after* user upload
+            # Send to dump channel in background
             try:
                 if os.path.exists(renamed_file_path):
                     logger.info(f"Sending {new_name} to dump channel for user {user_id}")
-                    await codeflixbots.send_to_dump_channel(client, renamed_file_path, f"Renamed: {new_name}")
+                    asyncio.create_task(send_to_dump_channel(client, sent_message, user_id))
                 else:
                     logger.error(f"File {renamed_file_path} does not exist for dump channel")
                     await send_log(client, message.from_user, f"Dump channel failed: File {renamed_file_path} missing")
@@ -438,7 +503,5 @@ async def process_file(client, message):
                 await send_log(client, message.from_user, f"Processing error: {str(e)}")
         finally:
             user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
-    else:
-        await message.reply_text("Use /extraction to set a rename mode.")
-
-### coded by @i_killed_my_clan
+           else:
+                await message.reply_text("Use /extraction to set a rename mode.")
