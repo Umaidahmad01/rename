@@ -80,7 +80,7 @@ def extract_quality(filename):
     if not filename:
         return "UNKNOWN"
     for pattern, extractor in QUALITY_PATTERNS:
-        match = pattern.search(filename)
+        match = process_pattern.search(filename)
         if match:
             quality = extractor(match)
             logger.info(f"Extracted quality: {quality}")
@@ -149,7 +149,7 @@ async def add_metadata(input_path, output_path, user_id):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=2.0)
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300.0)
         
         if process.returncode != 0:
             logger.error(f"FFmpeg error (return code {process.returncode}): {stderr.decode()}")
@@ -274,7 +274,15 @@ async def process_file(client, message):
         if not new_template.strip():
             new_template = f"file_{user_id}"
 
-        new_filename = sanitize_filename(f"{new_template}{target_ext}")
+        # Simple filename cleaning (replacing sanitize_filename)
+        name, ext = os.path.splitext(f"{new_template}{target_ext}")
+        clean_name = re.sub(r'[^a-zA-Z0-9\s\-\[\]\(\)\.]', '_', name)
+        clean_name = re.sub(r'\s+', '_', clean_name).strip('_ ')
+        clean_name = clean_name.replace('..', '.').replace('__', '_')
+        new_filename = f"{clean_name}{ext}"[:255]
+        if not new_filename:
+            new_filename = f"file_{user_id}{ext}"
+
         download_path = f"downloads/{new_filename}"
         metadata_path = f"metadata/{new_filename}"
 
