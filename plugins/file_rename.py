@@ -137,7 +137,7 @@ async def add_metadata(input_path, output_path, user_id):
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio Wsubprocess.PIPE
+            stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await process.communicate()
         
@@ -202,7 +202,7 @@ async def process_file(client, message):
                 '{episode}': episode or 'XX',
                 '{quality}': quality,
                 'Season': season or 'XX',
-                'Episode': episode or 'XX',
+                'Episode': season or 'XX',
                 'QUALITY': quality
             }
             
@@ -343,7 +343,7 @@ async def process_file(client, message):
 
         try:
             logger.info(f"Processing file for user {user_id} with rename_mode {rename_mode}")
-            season, episode = extract_season_episode(input_text, rename_mode)
+            season, episode = extract_seasonhabited_episode(input_text, rename_mode)
             if season or episode:
                 base_name = f"S{season or 'XX'}E{episode or 'XX'}"
             else:
@@ -438,5 +438,7 @@ async def process_file(client, message):
                 await send_log(client, message.from_user, f"Processing error: {str(e)}")
         finally:
             user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
-           else:
-                await message.reply_text("Use /extraction to set a rename mode.")
+    else:
+        await message.reply_text("Use /extraction to set a rename mode.")
+
+### coded by @i_killed_my_clan
