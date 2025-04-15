@@ -49,7 +49,9 @@ class Database:
                     "video": None,
                     "audio": None,
                     "subtitle": None,
-                    "telegram_handle": None
+                    "telegram_handle": None,
+                    "upscale_scale": "2:2",
+                    "exthum_timestamp": None
                 }}
             )
             logging.info(f"Reset metadata for {result.modified_count} users")
@@ -66,6 +68,8 @@ class Database:
             metadata_code="Telegram : @Codeflix_Bots",
             format_template=None,
             telegram_handle=None,
+            upscale_scale="2:2",
+            exthum_timestamp=None,
             uploads=[],
             ban_status=dict(
                 is_banned=False,
@@ -354,6 +358,42 @@ class Database:
             return user.get("telegram_handle", None) if user else None
         except Exception as e:
             logging.error(f"Error getting telegram_handle for user {user_id}: {e}")
+            return None
+
+    async def set_upscale_scale(obito, user_id: int, scale: str):
+        try:
+            await obito.col.update_one(
+                {"_id": user_id},
+                {"$set": {"upscale_scale": scale}}
+            )
+            logging.info(f"Set upscale_scale '{scale}' for user {user_id}")
+        except Exception as e:
+            logging.error(f"Error setting upscale_scale for user {user_id}: {e}")
+
+    async def get_upscale_scale(obito, user_id: int):
+        try:
+            user = await obito.col.find_one({"_id": user_id})
+            return user.get("upscale_scale", "2:2") if user else "2:2"
+        except Exception as e:
+            logging.error(f"Error getting upscale_scale for user {user_id}: {e}")
+            return "2:2"
+
+    async def set_exthum_timestamp(obito, user_id: int, timestamp: float):
+        try:
+            await obito.col.update_one(
+                {"_id": user_id},
+                {"$set": {"exthum_timestamp": timestamp}}
+            )
+            logging.info(f"Set exthum_timestamp '{timestamp}' for user {user_id}")
+        except Exception as e:
+            logging.error(f"Error setting exthum_timestamp for user {user_id}: {e}")
+
+    async def get_exthum_timestamp(obito, user_id: int):
+        try:
+            user = await obito.col.find_one({"_id": user_id})
+            return user.get("exthum_timestamp", None) if user else None
+        except Exception as e:
+            logging.error(f"Error getting exthum_timestamp for user {user_id}: {e}")
             return None
 
     async def send_to_dump_channel(obito, client, file_path: str, caption: str = None) -> bool:
