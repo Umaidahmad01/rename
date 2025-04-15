@@ -13,14 +13,8 @@ from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
 from plugins.antinsfw import check_anti_nsfw
 from helper.utils import progress_for_pyrogram, humanbytes, send_log
-from helper.database import *
+from helper.database import codeflixbots
 from config import Config, Txt
-import random
-import asyncio
-from typing import List, Optional
-
-# Initialize MongoDB
-db: Database = Database()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,13 +26,13 @@ renaming_operations = {}
 user_tasks = {}
 
 SEASON_EPISODE_PATTERNS = [
-    (re.compile(r'S(\d+)(?:E|EP)(\d+)'), ('season', 'episode')),
-    (re.compile(r'S(\d+)[\s-]*(?:E|EP)(\d+)'), ('season', 'episode')),
+    (re.compile(r'S(\d+)(?:E|EP)(\d+)', re.IGNORECASE), ('season', 'episode')),
+    (re.compile(r'S(\d+)[\s-]*(?:E|EP)(\d+)', re.IGNORECASE), ('season', 'episode')),
     (re.compile(r'Season\s*(\d+)\s*Episode\s*(\d+)', re.IGNORECASE), ('season', 'episode')),
-    (re.compile(r'\[S(\d+)\]\[E(\d+)\]'), ('season', 'episode')),
-    (re.compile(r'S(\d+)[^\d]*(\d+)'), ('season', 'episode')),
+    (re.compile(r'\[S(\d+)\]\[E(\d+)\]', re.IGNORECASE), ('season', 'episode')),
+    (re.compile(r'S(\d+)[^\d]*(\d+)', re.IGNORECASE), ('season', 'episode')),
     (re.compile(r'(?:E|EP|Episode)\s*(\d+)', re.IGNORECASE), (None, 'episode')),
-    (re.compile(r'\b(\d+)\b'), (None, 'episode'))
+    (re.compile(r'\b(\d+)\b', re.IGNORECASE), (None, 'episode'))
 ]
 
 QUALITY_PATTERNS = [
@@ -50,21 +44,32 @@ QUALITY_PATTERNS = [
     (re.compile(r'\[(\d{3,4}[pi])\]', re.IGNORECASE), lambda m: m.group(1))
 ]
 
+def sanitize_filename(filename):
+    if not filename:
+        return "unnamed_file"
+    clean = re.sub(r'[^a-zA-Z0-9\s\-\[\]\(\)\.]', '_', filename)
+    clean = re.sub(r'\s+', ' ', clean).strip('_ ')
+    clean = clean.replace('..', '.').replace('__', '_')
+    return clean[:100]
+
 def extract_season_episode(input_text, rename_mode):
     if not input_text:
         logger.warning(f"No input text for rename_mode {rename_mode}")
         return None, None
+    input_text = str(input_text)  # Ensure string to avoid NoneType
     for pattern, (season_group, episode_group) in SEASON_EPISODE_PATTERNS:
         match = pattern.search(input_text)
         if match:
             season = match.group(1) if season_group else None
-            episode = match.group(2) if episode_group else match.group(1)
+            episode = match.group(2) if episode_group and len(match.groups()) >= 2 else match.group(1)
             logger.info(f"Extracted season: {season}, episode: {episode} from {rename_mode}")
             return season, episode
     logger.warning(f"No season/episode matched for {rename_mode}: {input_text}")
     return None, None
 
 def extract_quality(filename):
+    if not filename:
+        return "Unknown"
     for pattern, extractor in QUALITY_PATTERNS:
         match = pattern.search(filename)
         if match:
@@ -103,39 +108,47 @@ async def add_metadata(input_path, output_path, user_id):
     
     try:
         metadata = {
-            'title': await codeflixbots.get_title(user_id) or "Unknown",
-            'artist': await codeflixbots.get_artist(user_id) or "Unknown",
-            'author': await codeflixbots.get_author(user_id) or "Unknown",
-            'video_title': await codeflixbots.get_video(user_id) or "Unknown",
-            'audio_title': await codeflixbots.get_audio(user_id) or "Unknown",
-            'subtitle': await codeflixbots.get_subtitle(user_id) or "Unknown"
+            'title': await codeflixbots.get_title(user_id),
+            'artist': await codeflixbots.get_artist(user_id),
+            'author': await codeflixbots.get_author(user_id),
+            'video_title': await codeflixbots.get_video(user_id),
+            'audio_title': await codeflixbots.get_audio(user_id),
+            'subtitle': await codeflixbots.get_subtitle(user_id)
         }
+        cmd = [ffmpeg, '-i', input_path, '-map', '0', '-c', 'copy', '-loglevel', 'error']
+        has_metadata = False
+        for key, value in metadata.items():
+            if value:
+                has_metadata = True
+                if key == 'video_title':
+                    cmd.extend(['-metadata:s:v', f'title={value}'])
+                elif key == 'audio_title':
+                    cmd.extend(['-metadata:s:a', f'title={value}'])
+                elif key == 'subtitle':
+                    cmd.extend(['-metadata:s:s', f'title={value}'])
+                else:
+                    cmd.extend(['-metadata', f'{key}={value}'])
+        if not has_metadata:
+            logger.info(f"No valid metadata for user {user_id}, skipping")
+            return False
+        cmd.append(output_path)
         
-        cmd = [
-            ffmpeg,
-            '-i', input_path,
-            '-metadata', f'title={metadata["title"]}',
-            '-metadata', f'artist={metadata["artist"]}',
-            '-metadata', f'author={metadata["author"]}',
-            '-metadata:s:v', f'title={metadata["video_title"]}',
-            '-metadata:s:a', f'title={metadata["audio_title"]}',
-            '-metadata:s:s', f'title={metadata["subtitle"]}',
-            '-map', '0',
-            '-c', 'copy',
-            '-loglevel', 'error',
-            output_path
-        ]
-        
+        logger.info(f"Running FFmpeg: {' '.join(cmd)}")
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        _, stderr = await process.communicate()
+        stdout, stderr = await process.communicate()
         
         if process.returncode != 0:
-            logger.error(f"FFmpeg error: {stderr.decode()}")
-            raise RuntimeError(f"FFmpeg error: {stderr.decode()}")
+            logger.error(f"FFmpeg error (return code {process.returncode}): {stderr.decode()}")
+            raise RuntimeError(f"FFmpeg failed: {stderr.decode()}")
+        if not os.path.exists(output_path):
+            logger.error(f"Output file {output_path} not created")
+            raise RuntimeError(f"Output file {output_path} not created")
+        logger.info(f"Metadata added to {output_path}")
+        return True
     except Exception as e:
         logger.error(f"Metadata processing failed: {e}")
         raise
@@ -155,7 +168,7 @@ async def process_file(client, message):
     if format_template:
         if message.document:
             file_id = message.document.file_id
-            file_name = message.document.file_name
+            file_name = message.document.file_name or "document"
             file_size = message.document.file_size
             media_type = "document"
         elif message.video:
@@ -192,11 +205,15 @@ async def process_file(client, message):
                 'QUALITY': quality
             }
             
+            new_template = format_template
             for placeholder, value in replacements.items():
-                format_template = format_template.replace(placeholder, value)
-
+                new_template = new_template.replace(placeholder, str(value))
+            
+            if not new_template.strip():
+                new_template = f"file_{user_id}"
+            
             ext = os.path.splitext(file_name)[1] or ('.mp4' if media_type == "video" else '.mp3')
-            new_filename = f"{format_template}{ext}"
+            new_filename = sanitize_filename(f"{new_template}{ext}")
             download_path = f"downloads/{new_filename}"
             metadata_path = f"metadata/{new_filename}"
             
@@ -217,8 +234,8 @@ async def process_file(client, message):
                 logger.info(f"Download cancelled for user {user_id}")
                 await msg.edit("Task cancelled.")
                 return
-            except ChatAdminRequired as e:
-                logger.error(f"ChatAdminRequired during download: {e}")
+            except ChatAdminRequired:
+                logger.error(f"ChatAdminRequired during download")
                 await msg.edit("Error: Bot lacks admin rights.")
                 await send_log(client, message.from_user, f"Download failed: Bot lacks admin rights")
                 return
@@ -228,22 +245,23 @@ async def process_file(client, message):
                 await send_log(client, message.from_user, f"Download failed: {str(e)}")
                 return
 
-            await msg.edit("**Processing metadata...**")
-            try:
-                await add_metadata(file_path, metadata_path, user_id)
-                file_path = metadata_path
-            except Exception as e:
-                logger.error(f"Metadata processing failed for user {user_id}: {e}")
-                await msg.edit(f"Metadata processing failed: {e}")
-                await send_log(client, message.from_user, f"Metadata processing failed: {str(e)}")
-                return
-
-            await msg.edit("**Sending to dump channel...**")
-            try:
-                await codeflixbots.send_to_dump_channel(client, file_path, f"Renamed: {new_filename}")
-            except Exception as e:
-                logger.error(f"Dump channel send failed for user {user_id}: {e}")
-                await send_log(client, message.from_user, f"Dump channel send failed: {str(e)}")
+            metadata_enabled = await codeflixbots.get_metadata(user_id)
+            if metadata_enabled:
+                await msg.edit("**Processing metadata...**")
+                try:
+                    if await add_metadata(file_path, metadata_path, user_id):
+                        if os.path.exists(metadata_path):
+                            file_path = metadata_path
+                        else:
+                            logger.warning(f"Metadata file {metadata_path} not found, using {file_path}")
+                    else:
+                        logger.info(f"No metadata applied for user {user_id}")
+                except Exception as e:
+                    logger.error(f"Metadata processing failed for user {user_id}: {e}")
+                    await msg.edit(f"Metadata processing failed, proceeding without metadata: {e}")
+                    await send_log(client, message.from_user, f"Metadata processing failed: {str(e)}")
+            else:
+                logger.info(f"Metadata disabled for user {user_id}")
 
             await msg.edit("**Preparing upload...**")
             caption = await codeflixbots.get_caption(user_id) or f"**{new_filename}**"
@@ -252,12 +270,18 @@ async def process_file(client, message):
 
             if thumb:
                 thumb_path = await client.download_media(thumb)
-            elif media_type == "video" and message.video.thumbs:
+            elif media_type == "video" and message.video and message.video.thumbs:
                 thumb_path = await client.download_media(message.video.thumbs[0].file_id)
             
             thumb_path = await process_thumbnail(thumb_path)
 
             await msg.edit("**Uploading...**")
+            if not os.path.exists(file_path):
+                logger.error(f"Upload failed: File {file_path} does not exist")
+                await msg.edit(f"Upload failed: File {new_filename} not found")
+                await send_log(client, message.from_user, f"Upload failed: File {file_path} missing")
+                return
+            
             upload_task = asyncio.create_task(client.send_document(
                 chat_id=message.chat.id,
                 document=file_path,
@@ -274,8 +298,8 @@ async def process_file(client, message):
                 logger.info(f"Upload cancelled for user {user_id}")
                 await msg.edit("Task cancelled.")
                 return
-            except ChatAdminRequired as e:
-                logger.error(f"ChatAdminRequired during upload: {e}")
+            except ChatAdminRequired:
+                logger.error(f"ChatAdminRequired during upload")
                 await msg.edit("Error: Bot lacks admin rights.")
                 await send_log(client, message.from_user, f"Upload failed: Bot lacks admin rights")
                 return
@@ -284,6 +308,18 @@ async def process_file(client, message):
                 await msg.edit(f"Upload failed: {e}")
                 await send_log(client, message.from_user, f"Upload failed: {str(e)}")
                 return
+
+            # Send to dump channel *after* user upload
+            try:
+                if os.path.exists(file_path):
+                    await msg.edit("**Sending to dump channel...**")
+                    await codeflixbots.send_to_dump_channel(client, file_path, f"Renamed: {new_filename}")
+                else:
+                    logger.error(f"File {file_path} does not exist for dump channel")
+                    await send_log(client, message.from_user, f"Dump channel failed: File {file_path} missing")
+            except Exception as e:
+                logger.error(f"Dump channel send failed for user {user_id}: {e}")
+                await send_log(client, message.from_user, f"Dump channel send failed: {str(e)}")
 
         except Exception as e:
             logger.error(f"Processing error for user {user_id}: {e}")
@@ -313,7 +349,7 @@ async def process_file(client, message):
                 base_name = input_text or f"unnamed_{user_id}"
 
             extension = file.file_name.split('.')[-1] if '.' in file.file_name else 'bin'
-            new_name = f"{base_name}.{extension}"
+            new_name = sanitize_filename(f"{base_name}.{extension}")
             await message.reply_text(f"Renaming using {rename_mode}: {new_name}")
 
             logger.info(f"Downloading {file.file_name} for user {user_id}")
@@ -325,8 +361,8 @@ async def process_file(client, message):
                 logger.info(f"Download cancelled for user {user_id}")
                 await message.reply_text("Task cancelled.")
                 return
-            except ChatAdminRequired as e:
-                logger.error(f"ChatAdminRequired during download: {e}")
+            except ChatAdminRequired:
+                logger.error(f"ChatAdminRequired during download")
                 await message.reply_text("Error: Bot lacks admin rights.")
                 await send_log(client, message.from_user, f"Download failed: Bot lacks admin rights")
                 return
@@ -341,14 +377,13 @@ async def process_file(client, message):
             os.makedirs("downloads", exist_ok=True)
             os.rename(file_path, renamed_file_path)
 
-            logger.info(f"Sending {new_name} to dump channel for user {user_id}")
-            try:
-                await codeflixbots.send_to_dump_channel(client, renamed_file_path, f"Renamed: {new_name}")
-            except Exception as e:
-                logger.error(f"Dump channel send failed for user {user_id}: {e}")
-                await send_log(client, message.from_user, f"Dump channel send failed: {str(e)}")
-
             logger.info(f"Uploading {new_name} for user {user_id}")
+            if not os.path.exists(renamed_file_path):
+                logger.error(f"Upload failed: File {renamed_file_path} does not exist")
+                await message.reply_text(f"Upload failed: File {new_name} not found")
+                await send_log(client, message.from_user, f"Upload failed: File {renamed_file_path} missing")
+                return
+            
             upload_task = asyncio.create_task(client.send_document(
                 chat_id=message.chat.id,
                 document=renamed_file_path,
@@ -361,8 +396,8 @@ async def process_file(client, message):
                 logger.info(f"Upload cancelled for user {user_id}")
                 await message.reply_text("Task cancelled.")
                 return
-            except ChatAdminRequired as e:
-                logger.error(f"ChatAdminRequired during upload: {e}")
+            except ChatAdminRequired:
+                logger.error(f"ChatAdminRequired during upload")
                 await message.reply_text("Error: Bot lacks admin rights.")
                 await send_log(client, message.from_user, f"Upload failed: Bot lacks admin rights")
                 return
@@ -372,12 +407,24 @@ async def process_file(client, message):
                 await send_log(client, message.from_user, f"Upload error: {str(e)}")
                 return
 
+            # Send to dump channel *after* user upload
+            try:
+                if os.path.exists(renamed_file_path):
+                    logger.info(f"Sending {new_name} to dump channel for user {user_id}")
+                    await codeflixbots.send_to_dump_channel(client, renamed_file_path, f"Renamed: {new_name}")
+                else:
+                    logger.error(f"File {renamed_file_path} does not exist for dump channel")
+                    await send_log(client, message.from_user, f"Dump channel failed: File {renamed_file_path} missing")
+            except Exception as e:
+                logger.error(f"Dump channel send failed for user {user_id}: {e}")
+                await send_log(client, message.from_user, f"Dump channel send failed: {str(e)}")
+
             os.remove(renamed_file_path)
             await codeflixbots.delete_user_choice(user_id)
             logger.info(f"File processed, choice deleted for user {user_id}")
 
-        except ChatAdminRequired as e:
-            logger.error(f"ChatAdminRequired in file processing: {e}")
+        except ChatAdminRequired:
+            logger.error(f"ChatAdminRequired in file processing")
             await message.reply_text("Error: Bot lacks admin rights.")
             await send_log(client, message.from_user, f"Processing error: Bot lacks admin rights")
         except Exception as e:
@@ -393,7 +440,6 @@ async def process_file(client, message):
     else:
         await message.reply_text("Use /extraction to set a rename mode.")
 
-
 @Client.on_message(filters.command("extraction") & filters.private)
 async def extraction_command(client: Client, message: Message) -> None:
     try:
@@ -407,8 +453,8 @@ async def extraction_command(client: Client, message: Message) -> None:
         )
         logger.info(f"Sent extraction options to user {message.from_user.id}")
         await send_log(client, message.from_user, "Started /extraction command")
-    except ChatAdminRequired as e:
-        logger.error(f"ChatAdminRequired in extraction_command: {e}")
+    except ChatAdminRequired:
+        logger.error(f"ChatAdminRequired in extraction_command")
         await message.reply_text("Error: Bot lacks admin rights.")
         await send_log(client, message.from_user, "Extraction command failed: Bot lacks admin rights")
     except Exception as e:
@@ -417,196 +463,64 @@ async def extraction_command(client: Client, message: Message) -> None:
         await send_log(client, message.from_user, f"Extraction command error: {str(e)}")
 
 @Client.on_callback_query()
-async def handle_callback(client: Client, callback_query: CallbackQuery) -> None:
-    user_id = callback_query.from_user.id
-    choice = callback_query.data
-    logger.info(f"Callback received for user {user_id}: {choice}")
-
-    try:
-        if not choice or choice not in ["filename", "filecaption"]:
-            logger.error(f"Invalid callback data for user {user_id}: {choice}")
-            await callback_query.message.reply_text("Error: Invalid option.")
-            await callback_query.answer("Invalid selection!")
-            await send_log(client, callback_query.from_user, f"Invalid callback: {choice}")
-            return
-
-        if not callback_query.message.reply_markup or not hasattr(callback_query.message.reply_markup, 'inline_keyboard'):
-            logger.error(f"No keyboard for user {user_id}")
-            await callback_query.message.reply_text("Error: Buttons missing.")
-            await callback_query.answer("Keyboard error!")
-            await send_log(client, callback_query.from_user, "Callback error: No keyboard")
-            return
-
-        updated_keyboard = [
-            [InlineKeyboardButton("Filename ✅" if choice == "filename" else "Filename", callback_data="filename")],
-            [InlineKeyboardButton("Filecaption ✅" if choice == "filecaption" else "Filecaption", callback_data="filecaption")]
-        ]
-        logger.info(f"Keyboard for user {user_id}: {[[b.text for b in r] for r in updated_keyboard]}")
-
-        for attempt in range(3):
-            try:
-                await callback_query.message.edit_reply_markup(InlineKeyboardMarkup(updated_keyboard))
-                logger.info(f"Keyboard updated for user {user_id}")
-                break
-            except MessageNotModified:
-                logger.warning(f"Keyboard unchanged for user {user_id}, attempt {attempt+1}")
-                break
-            except ChatAdminRequired as e:
-                logger.error(f"ChatAdminRequired for keyboard update: {e}")
-                await callback_query.message.reply_text("Error: Bot lacks admin rights.")
-                await callback_query.answer("Admin error!")
-                await send_log(client, callback_query.from_user, "Keyboard update failed: Bot lacks admin rights")
-                return
-            except Exception as e:
-                logger.error(f"Keyboard update failed for user {user_id}, attempt {attempt+1}: {e}")
-                if attempt == 2:
-                    await callback_query.message.reply_text("Error: Couldn't update buttons.")
-                    await callback_query.answer("Update failed!")
-                    await send_log(client, callback_query.from_user, f"Keyboard update error: {str(e)}")
-                    return
-                await asyncio.sleep(1)
-
-        for attempt in range(3):
-            try:
-                success = await codeflixbots.set_user_choice(user_id, choice)
-                if not success:
-                    logger.error(f"Failed to save choice '{choice}' for user {user_id}")
-                    await callback_query.message.reply_text("Error: Couldn't save choice.")
-                    await callback_query.answer("Database error!")
-                    await send_log(client, callback_query.from_user, f"Failed to save choice: {choice}")
-                    return
-                logger.info(f"Saved choice '{choice}' for user {user_id}")
-                await callback_query.message.reply_text(
-                    f"Please send the file to rename using its {choice}."
-                )
-                await send_log(client, callback_query.from_user, f"Selected rename mode: {choice}")
-                break
-            except Exception as e:
-                logger.error(f"Database save failed for user {user_id}, attempt {attempt+1}: {e}")
-                if attempt == 2:
-                    await callback_query.message.reply_text("Error: Database issue.")
-                    await callback_query.answer("Database error!")
-                    await send_log(client, callback_query.from_user, f"Database save error: {str(e)}")
-                await asyncio.sleep(1)
-
-        await callback_query.answer("Option selected!")
-    except ChatAdminRequired as e:
-        logger.error(f"ChatAdminRequired in callback: {e}")
-        await callback_query.message.reply_text("Error: Bot lacks admin rights.")
-        await callback_query.answer("Admin error!")
-        await send_log(client, callback_query.from_user, "Callback failed: Bot lacks admin rights")
-    except Exception as e:
-        logger.error(f"Callback error for user {user_id}: {e}")
-        await callback_query.message.reply_text("Error: Something went wrong.")
-        await callback_query.answer("Error!")
-        await send_log(client, callback_query.from_user, f"Callback error: {str(e)}")
-
-@Client.on_message(filters.command("clear") & filters.private)
-async def clear_tasks(client: Client, message: Message) -> None:
-    user_id = message.from_user.id
-    logger.info(f"Clearing tasks for user {user_id}")
-    try:
-        # Clear running tasks
-        if user_id in user_tasks:
-            tasks = user_tasks[user_id]
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            user_tasks[user_id] = []
-            logger.info(f"Cleared {len(tasks)} tasks for user {user_id}")
-
-        # Clear rename mode
-        await codeflixbots.delete_user_choice(user_id)
-        await message.reply_text("All ongoing tasks and settings cleared!")
-        await send_log(client, message.from_user, "Cleared all tasks and settings")
-    except ChatAdminRequired as e:
-        logger.error(f"ChatAdminRequired in clear: {e}")
-        await message.reply_text("Error: Bot lacks admin rights.")
-        await send_log(client, message.from_user, "Clear command failed: Bot lacks admin rights")
-    except Exception as e:
-        logger.error(f"Error clearing tasks for user {user_id}: {e}")
-        await message.reply_text("Error: Couldn't clear tasks.")
-        await send_log(client, message.from_user, f"Clear command error: {str(e)}")
-
-@Client.on_message(filters.private & (filters.document | filters.video | filters.audio))
-async def auto_rename_files(client, message):
-    user_id = message.from_user.id
-    media = message.document or message.video or message.audio
-    file_id = media.file_id
-    file_name = media.file_name or "unknown"
-
-    if user_id not in user_tasks:
-        user_tasks[user_id] = []
-
-    try:
-        logger.info(f"Processing file {file_id} for user {user_id}")
-        await send_log(client, message.from_user, f"Processing file: {file_name}")
-        await process_file(client, message)
-    except Exception as e:
-        logger.error(f"Error processing file for user {user_id}: {e}")
-        await message.reply_text("Error: Couldn't process file.")
-        await send_log(client, message.from_user, f"Processing error: {str(e)}")
-
-
-
-# Start Command Handler
-@Client.on_message(filters.private & filters.command("start"))
-async def start(client, message: Message):
-    user = message.from_user
-    await codeflixbots.add_user(client, message)
-
-    # Initial interactive text and sticker sequence
-    m = await message.reply_text("ᴋᴏɴɴɪᴄʜɪᴡᴀ..ɪ'ᴍ ᴋᴀɴᴀᴏ!\nᴡᴀɪᴛ ᴀ ᴍᴏᴍᴇɴᴛ. . .")
-    await asyncio.sleep(0.4)
-    await m.edit_text("🎊")
-    await asyncio.sleep(0.5)
-    await m.edit_text("⚡")
-    await asyncio.sleep(0.5)
-    await m.edit_text("ᴀʀᴀ ᴀʀᴀ!...")
-    await asyncio.sleep(0.4)
-    await m.delete()
-
-    # Send sticker after the text sequence
-    await message.reply_sticker("CAACAgUAAxkBAAECroBmQKMAAQ-Gw4nibWoj_pJou2vP1a4AAlQIAAIzDxlVkNBkTEb1Lc4eBA")
-
-    # Define buttons for the start message
-    buttons = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("• ᴍʏ ᴀʟʟ ᴄᴏᴍᴍᴀɴᴅs •", callback_data='help')
-        ],
-        [
-            InlineKeyboardButton('• ᴜᴘᴅᴀᴛᴇs', url='https://t.me/FILE_SHARINGBOTS'),
-            InlineKeyboardButton('sᴜᴘᴘᴏʀᴛ •', url='https://t.me/ahss_help_zone')
-        ],
-        [
-            InlineKeyboardButton('• ᴀʙᴏᴜᴛ• ', callback_data='about')
-        ]
-    ])
-
-    # Send start message with or without picture
-    if Config.START_PIC:
-        await message.reply_photo(
-            Config.START_PIC,
-            caption=Txt.START_TXT.format(user.mention),
-            reply_markup=buttons
-        )
-    else:
-        await message.reply_text(
-            text=Txt.START_TXT.format(user.mention),
-            reply_markup=buttons,
-            disable_web_page_preview=True
-        )
-
-
-# Callback Query Handler
-@Client.on_callback_query()
 async def cb_handler(client, query: CallbackQuery):
     data = query.data
     user_id = query.from_user.id
 
-    print(f"Callback data received: {data}")  # Debugging line
+    logger.info(f"Callback data received: {data}")
 
-    if data == "home":
+    # Handle /extraction callbacks
+    if data in ["filename", "filecaption"]:
+        try:
+            choice = data
+            updated_keyboard = [
+                [InlineKeyboardButton("Filename ✅" if choice == "filename" else "Filename", callback_data="filename")],
+                [InlineKeyboardButton("Filecaption ✅" if choice == "filecaption" else "Filecaption", callback_data="filecaption")]
+            ]
+
+            try:
+                await query.message.edit_reply_markup(InlineKeyboardMarkup(updated_keyboard))
+                logger.info(f"Updated keyboard for user {user_id}")
+            except MessageNotModified:
+                logger.debug(f"Keyboard unchanged for user {user_id}")
+            except ChatAdminRequired:
+                logger.error(f"ChatAdminRequired for keyboard update")
+                await query.message.reply_text("Error: Bot lacks admin rights.")
+                await query.answer("Bot needs admin rights!", show_alert=True)
+                await send_log(client, query.from_user, "Keyboard update failed: Bot lacks admin rights")
+                return
+            except Exception as e:
+                logger.error(f"Keyboard update failed for user {user_id}: {e}")
+                await query.message.reply_text("Error: Couldn't update buttons.")
+                await send_log(client, query.from_user, f"Keyboard update error: {str(e)}")
+                return
+
+            success = await codeflixbots.set_user_choice(user_id, choice)
+            if not success:
+                logger.error(f"Failed to save choice '{choice}' for user {user_id}")
+                await query.message.reply_text("Error: Couldn't save your choice.")
+                await query.answer("Database error!", show_alert=True)
+                await send_log(client, query.from_user, f"Failed to save choice: {choice}")
+                return
+
+            await query.message.reply_text(
+                f"Please send the file to rename using its {choice}."
+            )
+            await query.answer("Option selected!")
+            await send_log(client, query.from_user, f"Selected rename mode: {choice}")
+        except ChatAdminRequired:
+            logger.error(f"ChatAdminRequired in callback")
+            await query.message.reply_text("Error: Bot lacks admin rights.")
+            await query.answer("Bot needs admin rights!", show_alert=True)
+            await send_log(client, query.from_user, "Callback failed: Bot lacks admin rights")
+        except Exception as e:
+            logger.error(f"Callback error for user {user_id}: {e}")
+            await query.message.reply_text("Error: Something went wrong.")
+            await query.answer("Error occurred!", show_alert=True)
+            await send_log(client, query.from_user, f"Callback error: {str(e)}")
+
+    # Handle /start and /help callbacks
+    elif data == "home":
         await query.message.edit_text(
             text=Txt.START_TXT.format(query.from_user.mention),
             disable_web_page_preview=True,
@@ -624,10 +538,9 @@ async def cb_handler(client, query: CallbackQuery):
                 [InlineKeyboardButton("• sᴜᴘᴘᴏʀᴛ", url='https://t.me/ahss_help_zone'), InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="help")]
             ])
         )
-
     elif data == "help":
         await query.message.edit_text(
-            text=Txt.HELP_TXT.format(client.mention),
+            text=Txt.HELP_TXT.format((await client.get_me()).mention),
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("• ᴀᴜᴛᴏ ʀᴇɴᴀᴍᴇ ғᴏʀᴍᴀᴛ •", callback_data='file_names')],
@@ -636,10 +549,9 @@ async def cb_handler(client, query: CallbackQuery):
                 [InlineKeyboardButton('• ʜᴏᴍᴇ', callback_data='home')]
             ])
         )
-
     elif data == "meta":
-        await query.message.edit_text(  # Change edit_caption to edit_text
-            text=Txt.SEND_METADATA,  # Changed from caption to text
+        await query.message.edit_text(
+            text=Txt.SEND_METADATA,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close"), InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="help")]
             ])
@@ -715,312 +627,27 @@ async def cb_handler(client, query: CallbackQuery):
             await query.message.delete()
             await query.message.continue_propagation()
 
-# Donation Command Handler
-@Client.on_message(filters.command("donate"))
-async def donation(client, message):
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton(text="ʙᴀᴄᴋ", callback_data="help"), InlineKeyboardButton(text="ᴏᴡɴᴇʀ", url='https://t.me/proobito')]
-    ])
-    yt = await message.reply_photo(photo='https://envs.sh/ZsI.png?DpE8x=1', caption=Txt.DONATE_TXT, reply_markup=buttons)
-    await asyncio.sleep(300)
-    await yt.delete()
-    await message.delete()
-
-# Premium Command Handler
-@Client.on_message(filters.command("premium"))
-async def getpremium(bot, message):
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("ᴏᴡɴᴇʀ", url="https://t.me/proobito"), InlineKeyboardButton("ᴄʟᴏsᴇ", callback_data="close")]
-    ])
-    yt = await message.reply_photo(photo='https://envs.sh/ZsI.png?DpE8x=1', caption=Txt.PREMIUM_TXT, reply_markup=buttons)
-    await asyncio.sleep(300)
-    await yt.delete()
-    await message.delete()
-
-# Plan Command Handler
-@Client.on_message(filters.command("plan"))
-async def premium(bot, message):
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("sᴇɴᴅ ss", url="https://t.me/proobito"), InlineKeyboardButton("ᴄʟᴏsᴇ", callback_data="close")]
-    ])
-    yt = await message.reply_photo(photo='https://envs.sh/ZsI.png?DpE8x=1', caption=Txt.PREPLANS_TXT, reply_markup=buttons)
-    await asyncio.sleep(300)
-    await yt.delete()
-    await message.delete()
-
-# Bought Command Handler
-@Client.on_message(filters.command("bought") & filters.private)
-async def bought(client, message):
-    msg = await message.reply('Wait im checking...')
-    replied = message.reply_to_message
-
-    if not replied:
-        await msg.edit("<b>Please reply with the screenshot of your payment for the premium purchase to proceed.\n\nFor example, first upload your screenshot, then reply to it using the '/bought' command</b>")
-    elif replied.photo:
-        await client.send_photo(
-            chat_id=LOG_CHANNEL,
-            photo=replied.photo.file_id,
-            caption=f'<b>User - {message.from_user.mention}\nUser id - <code>{message.from_user.id}</code>\nUsername - <code>{message.from_user.username}</code>\nName - <code>{message.from_user.first_name}</code></b>',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Close", callback_data="close_data")]
-            ])
-        )
-        await msg.edit_text('<b>Your screenshot has been sent to Admins</b>')
-
-@Client.on_message(filters.private & filters.command("help"))
-async def help_command(client, message):
-    # Await get_me to get the bot's user object
-    bot = await client.get_me()
-    mention = bot.mention
-
-    # Send the help message with inline buttons
-    await message.reply_text(
-        text=Txt.HELP_TXT.format(mention=mention),
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("• ᴀᴜᴛᴏ ʀᴇɴᴀᴍᴇ ғᴏʀᴍᴀᴛ •", callback_data='file_names')],
-            [InlineKeyboardButton('• ᴛʜᴜᴍʙɴᴀɪʟ', callback_data='thumbnail'), InlineKeyboardButton('ᴄᴀᴘᴛɪᴏɴ •', callback_data='caption')],
-            [InlineKeyboardButton('• ᴍᴇᴛᴀᴅᴀᴛᴀ', callback_data='meta'), InlineKeyboardButton('ᴅᴏɴᴀᴛᴇ •', callback_data='donate')],
-            [InlineKeyboardButton('• ʜᴏᴍᴇ', callback_data='home')]
-        ])
-    )
-
-@Client.on_message(filters.command("metadata"))
-async def metadata(client, message):
+@Client.on_message(filters.command("clear") & filters.private)
+async def clear_tasks(client: Client, message: Message) -> None:
     user_id = message.from_user.id
-
-    # Fetch user metadata from the database
-    current = await db.get_metadata(user_id)
-    title = await db.get_title(user_id)
-    author = await db.get_author(user_id)
-    artist = await db.get_artist(user_id)
-    video = await db.get_video(user_id)
-    audio = await db.get_audio(user_id)
-    subtitle = await db.get_subtitle(user_id)
-
-    # Display the current metadata
-    text = f"""
-**㊋ Yᴏᴜʀ Mᴇᴛᴀᴅᴀᴛᴀ ɪꜱ ᴄᴜʀʀᴇɴᴛʟʏ: {current}**
-
-**◈ Tɪᴛʟᴇ ▹** `{title if title else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Aᴜᴛʜᴏʀ ▹** `{author if author else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Aʀᴛɪꜱᴛ ▹** `{artist if artist else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Aᴜᴅɪᴏ ▹** `{audio if audio else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Sᴜʙᴛɪᴛʟᴇ ▹** `{subtitle if subtitle else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Vɪᴅᴇᴏ ▹** `{video if video else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-    """
-
-    # Inline buttons to toggle metadata
-    buttons = [
-        [
-            InlineKeyboardButton(f"On{' ✅' if current == 'On' else ''}", callback_data='on_metadata'),
-            InlineKeyboardButton(f"Off{' ✅' if current == 'Off' else ''}", callback_data='off_metadata')
-        ],
-        [
-            InlineKeyboardButton("How to Set Metadata", callback_data="metainfo")
-        ]
-    ]
-    keyboard = InlineKeyboardMarkup(buttons)
-
-    await message.reply_text(text=text, reply_markup=keyboard, disable_web_page_preview=True)
-
-
-@Client.on_callback_query(filters.regex(r"on_metadata|off_metadata|metainfo"))
-async def metadata_callback(client, query: CallbackQuery):
-    user_id = query.from_user.id
-    data = query.data
-
-    if data == "on_metadata":
-        await db.set_metadata(user_id, "On")
-    elif data == "off_metadata":
-        await db.set_metadata(user_id, "Off")
-    elif data == "metainfo":
-        await query.message.edit_text(
-            text=Txt.META_TXT,
-            disable_web_page_preview=True,
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("Hᴏᴍᴇ", callback_data="home"),
-                    InlineKeyboardButton("close", callback_data="close")
-                ]
-            ])
-        )
-        return
-
-    # Fetch updated metadata after toggling
-    current = await db.get_metadata(user_id)
-    title = await db.get_title(user_id)
-    author = await db.get_author(user_id)
-    artist = await db.get_artist(user_id)
-    video = await db.get_video(user_id)
-    audio = await db.get_audio(user_id)
-    subtitle = await db.get_subtitle(user_id)
-
-    # Updated metadata message after toggle
-    text = f"""
-**㊋ Yᴏᴜʀ Mᴇᴛᴀᴅᴀᴛᴀ ɪꜱ ᴄᴜʀʀᴇɴᴛʟʏ: {current}**
-
-**◈ Tɪᴛʟᴇ ▹** `{title if title else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Aᴜᴛʜᴏʀ ▹** `{author if author else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Aʀᴛɪꜱᴛ ▹** `{artist if artist else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Aᴜᴅɪᴏ ▹** `{audio if audio else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Sᴜʙᴛɪᴛʟᴇ ▹** `{subtitle if subtitle else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Vɪᴅᴇᴏ ▹** `{video if video else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-    """
-
-    # Update inline buttons
-    buttons = [
-        [
-            InlineKeyboardButton(f"On{' ✅' if current == 'On' else ''}", callback_data='on_metadata'),
-            InlineKeyboardButton(f"Off{' ✅' if current == 'Off' else ''}", callback_data='off_metadata')
-        ],
-        [
-            InlineKeyboardButton("How to Set Metadata", callback_data="metainfo")
-        ]
-    ]
-    await query.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
-
-
-@Client.on_message(filters.private & filters.command('settitle'))
-async def title(client, message):
-    if len(message.command) == 1:
-        return await message.reply_text(
-            "**Gɪᴠᴇ Tʜᴇ Tɪᴛʟᴇ\n\nExᴀᴍᴩʟᴇ:- /settitle Encoded By @Animes_Cruise**")
-    title = message.text.split(" ", 1)[1]
-    await db.set_title(message.from_user.id, title=title)
-    await message.reply_text("**✅ Tɪᴛʟᴇ Sᴀᴠᴇᴅ**")
-
-@Client.on_message(filters.private & filters.command('setauthor'))
-async def author(client, message):
-    if len(message.command) == 1:
-        return await message.reply_text(
-            "**Gɪᴠᴇ Tʜᴇ Aᴜᴛʜᴏʀ\n\nExᴀᴍᴩʟᴇ:- /setauthor @Animes_Cruise**")
-    author = message.text.split(" ", 1)[1]
-    await db.set_author(message.from_user.id, author=author)
-    await message.reply_text("**✅ Aᴜᴛʜᴏʀ Sᴀᴠᴇᴅ**")
-
-@Client.on_message(filters.private & filters.command('setartist'))
-async def artist(client, message):
-    if len(message.command) == 1:
-        return await message.reply_text(
-            "**Gɪᴠᴇ Tʜᴇ Aʀᴛɪꜱᴛ\n\nExᴀᴍᴩʟᴇ:- /setartist @Animes_Cruise**")
-    artist = message.text.split(" ", 1)[1]
-    await db.set_artist(message.from_user.id, artist=artist)
-    await message.reply_text("**✅ Aʀᴛɪꜱᴛ Sᴀᴠᴇᴅ**")
-
-@Client.on_message(filters.private & filters.command('setaudio'))
-async def audio(client, message):
-    if len(message.command) == 1:
-        return await message.reply_text(
-            "**Gɪᴠᴇ Tʜᴇ Aᴜᴅɪᴏ Tɪᴛʟᴇ\n\nExᴀᴍᴩʟᴇ:- /setaudio @Animes_Cruise**")
-    audio = message.text.split(" ", 1)[1]
-    await db.set_audio(message.from_user.id, audio=audio)
-    await message.reply_text("**✅ Aᴜᴅɪᴏ Sᴀᴠᴇᴅ**")
-
-@Client.on_message(filters.private & filters.command('setsubtitle'))
-async def subtitle(client, message):
-    if len(message.command) == 1:
-        return await message.reply_text(
-            "**Gɪᴠᴇ Tʜᴇ Sᴜʙᴛɪᴛʟᴇ Tɪᴛʟᴇ\n\nExᴀᴍᴩʟᴇ:- /setsubtitle @Animes_Cruise**")
-    subtitle = message.text.split(" ", 1)[1]
-    await db.set_subtitle(message.from_user.id, subtitle=subtitle)
-    await message.reply_text("**✅ Sᴜʙᴛɪᴛʟᴇ Sᴀᴠᴇᴅ**")
-
-@Client.on_message(filters.private & filters.command('setvideo'))
-async def video(client, message):
-    if len(message.command) == 1:
-        return await message.reply_text(
-            "**Gɪᴠᴇ Tʜᴇ Vɪᴅᴇᴏ Tɪᴛʟᴇ\n\nExᴀᴍᴩʟᴇ:- /setvideo Encoded by @Animes_Cruise**")
-    video = message.text.split(" ", 1)[1]
-    await db.set_video(message.from_user.id, video=video)
-    await message.reply_text("**✅ Vɪᴅᴇᴏ Sᴀᴠᴇᴅ**")
-
-
-ADMIN_USER_ID = Config.ADMIN
-
-# Flag to indicate if the bot is restarting
-is_restarting = False
-
-@Client.on_message(filters.private & filters.command("restart") & filters.user(ADMIN_USER_ID))
-async def restart_bot(b, m):
-    global is_restarting
-    if not is_restarting:
-        is_restarting = True
-        await m.reply_text("**Restarting.....**")
-
-        # Gracefully stop the bot's event loop
-        b.stop()
-        time.sleep(2)  # Adjust the delay duration based on your bot's shutdown time
-
-        # Restart the bot process
-        os.execl(sys.executable, sys.executable, *sys.argv)
-
-
-@Client.on_message(filters.private & filters.command("tutorial"))
-async def tutorial(bot: Client, message: Message):
-    user_id = message.from_user.id
-    format_template = await codeflixbots.get_format_template(user_id)
-    await message.reply_text(
-        text=Txt.FILE_NAME_TXT.format(format_template=format_template),
-        disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("• ᴏᴡɴᴇʀ", url="https://t.me/cosmic_freak"),
-             InlineKeyboardButton("• ᴛᴜᴛᴏʀɪᴀʟ", url="https://t.me/codeflix_bots")]
-        ])
-    )
-
-
-@Client.on_message(filters.command(["stats", "status"]) & filters.user(Config.ADMIN))
-async def get_stats(bot, message):
-    total_users = await codeflixbots.total_users_count()
-    uptime = time.strftime("%Hh%Mm%Ss", time.gmtime(time.time() - bot.uptime))    
-    start_t = time.time()
-    st = await message.reply('**Accessing The Details.....**')    
-    end_t = time.time()
-    time_taken_s = (end_t - start_t) * 1000
-    await st.edit(text=f"**--Bot Status--** \n\n**⌚️ Bot Uptime :** {uptime} \n**🐌 Current Ping :** `{time_taken_s:.3f} ms` \n**👭 Total Users :** `{total_users}`")
-
-@Client.on_message(filters.command("broadcast") & filters.user(Config.ADMIN) & filters.reply)
-async def broadcast_handler(bot: Client, m: Message):
-    await bot.send_message(Config.LOG_CHANNEL, f"{m.from_user.mention} or {m.from_user.id} Is Started The Broadcast......")
-    all_users = await codeflixbots.get_all_users()
-    broadcast_msg = m.reply_to_message
-    sts_msg = await m.reply_text("Broadcast Started..!") 
-    done = 0
-    failed = 0
-    success = 0
-    start_time = time.time()
-    total_users = await codeflixbots.total_users_count()
-    async for user in all_users:
-        sts = await send_msg(user['_id'], broadcast_msg)
-        if sts == 200:
-           success += 1
-        else:
-           failed += 1
-        if sts == 400:
-           await codeflixbots.delete_user(user['_id'])
-        done += 1
-        if not done % 20:
-           await sts_msg.edit(f"Broadcast In Progress: \n\nTotal Users {total_users} \nCompleted : {done} / {total_users}\nSuccess : {success}\nFailed : {failed}")
-    completed_in = datetime.timedelta(seconds=int(time.time() - start_time))
-    await sts_msg.edit(f"Bʀᴏᴀᴅᴄᴀꜱᴛ Cᴏᴍᴩʟᴇᴛᴇᴅ: \nCᴏᴍᴩʟᴇᴛᴇᴅ Iɴ `{completed_in}`.\n\nTotal Users {total_users}\nCompleted: {done} / {total_users}\nSuccess: {success}\nFailed: {failed}")
-           
-async def send_msg(user_id, message):
+    logger.info(f"Clearing tasks for user {user_id}")
     try:
-        await message.copy(chat_id=int(user_id))
-        return 200
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
-        return send_msg(user_id, message)
-    except InputUserDeactivated:
-        logger.info(f"{user_id} : Deactivated")
-        return 400
-    except UserIsBlocked:
-        logger.info(f"{user_id} : Blocked The Bot")
-        return 400
-    except PeerIdInvalid:
-        logger.info(f"{user_id} : User ID Invalid")
-        return 400
+        if user_id in user_tasks:
+            tasks = user_tasks[user_id]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            user_tasks[user_id] = []
+            logger.info(f"Cleared {len(tasks)} tasks for user {user_id}")
+
+        await codeflixbots.delete_user_choice(user_id)
+        await message.reply_text("All ongoing tasks and settings cleared!")
+        await send_log(client, message.from_user, "Cleared all tasks and settings")
+    except ChatAdminRequired:
+        logger.error(f"ChatAdminRequired in clear")
+        await message.reply_text("Error: Bot lacks admin rights.")
+        await send_log(client, message.from_user, "Clear command failed: Bot lacks admin rights")
     except Exception as e:
-        logger.error(f"{user_id} : {e}")
-        return 500
+        logger.error(f"Error clearing tasks for user {user_id}: {e}")
+        await message.reply_text("Error: Couldn't clear tasks.")
+        await send_log(client, message.from_user, f"Clear command error: {str(e)}")
