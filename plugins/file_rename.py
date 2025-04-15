@@ -51,6 +51,40 @@ QUALITY_PATTERNS = [
     (re.compile(r'\[(\d{3,4}[pi])\]', re.IGNORECASE), lambda m: m.group(1))
 ]
 
+def sanitize_filename(filename, keep_extension=True, max_length=255):
+    """
+    Sanitizes a filename, preserving the @ symbol for Telegram handles.
+    
+    Args:
+        filename (str): Original filename to sanitize.
+        keep_extension (bool): Whether to preserve file extension.
+        max_length (int): Maximum length of the final filename.
+    
+    Returns:
+        str: Sanitized filename with @ preserved.
+    """
+    if not filename:
+        return "unnamed_file"
+    
+    name, ext = os.path.splitext(filename) if keep_extension else (filename, "")
+    
+    # Clean the name, preserve @
+    clean = re.sub(r'[^a-zA-Z0-9\s\-\[\]\(\)\.@]', '_', name)
+    clean = re.sub(r'\s+', '_', clean).strip('_ ')
+    clean = clean.replace('..', '.').replace('__', '_')
+    
+    # Reconstruct filename
+    result = f"{clean}{ext}"[:max_length]
+    
+    # Final cleanup
+    result = result.strip('_').strip('.')
+    if not result:
+        result = "unnamed_file"
+    if keep_extension and ext and not result.endswith(ext):
+        result = f"{result}{ext}"
+    
+    return result
+
 def extract_metadata(input_text, rename_mode):
     if not input_text:
         logger.warning(f"No input text for rename_mode {rename_mode}")
@@ -80,7 +114,7 @@ def extract_quality(filename):
     if not filename:
         return "UNKNOWN"
     for pattern, extractor in QUALITY_PATTERNS:
-        match = process_pattern.search(filename)
+        match = pattern.search(filename)
         if match:
             quality = extractor(match)
             logger.info(f"Extracted quality: {quality}")
@@ -274,15 +308,7 @@ async def process_file(client, message):
         if not new_template.strip():
             new_template = f"file_{user_id}"
 
-        # Simple filename cleaning (replacing sanitize_filename)
-        name, ext = os.path.splitext(f"{new_template}{target_ext}")
-        clean_name = re.sub(r'[^a-zA-Z0-9\s\-\[\]\(\)\.]', '_', name)
-        clean_name = re.sub(r'\s+', '_', clean_name).strip('_ ')
-        clean_name = clean_name.replace('..', '.').replace('__', '_')
-        new_filename = f"{clean_name}{ext}"[:255]
-        if not new_filename:
-            new_filename = f"file_{user_id}{ext}"
-
+        new_filename = sanitize_filename(f"{new_template}{target_ext}")
         download_path = f"downloads/{new_filename}"
         metadata_path = f"metadata/{new_filename}"
 
