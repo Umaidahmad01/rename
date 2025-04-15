@@ -9,24 +9,20 @@ from typing import Optional
 import os
 import asyncio
 
-# Access environment variables if available
 DB_URL = os.getenv("DB_URL", Config.DB_URL)
 DB_NAME = os.getenv("DB_NAME", Config.DB_NAME)
 DUMP_CHANNEL = os.getenv("DUMP_CHANNEL", getattr(Config, "DUMP_CHANNEL", None))
 
-# Database class with all functionality
 class Database:
     def __init__(obito, uri: str = DB_URL, db_name: str = DB_NAME) -> None:
-        # Async MongoDB connection
         try:
             obito._async_client = motor.motor_asyncio.AsyncIOMotorClient(uri)
-            obito._async_client.server_info()  # Check connection
+            obito._async_client.server_info()
             logging.info("Successfully connected to async MongoDB")
         except Exception as e:
             logging.error(f"Failed to connect to async MongoDB: {e}")
             raise e
         
-        # Sync MongoDB connection (kept for compatibility)
         try:
             obito.client = MongoClient(uri)
             logging.info("Successfully connected to sync MongoDB")
@@ -34,22 +30,14 @@ class Database:
             logging.error(f"Failed to connect to sync MongoDB: {e}")
             raise e
 
-        # Async collections
         obito.codeflixbots = obito._async_client[db_name]
         obito.col = obito.codeflixbots.user
-
-        # Sync collections (kept for compatibility)
         obito.db = obito.client[db_name]
         obito.users = obito.db.users
-
-        # Store DUMP_CHANNEL
         obito.dump_channel = DUMP_CHANNEL
-
-        # Migrate metadata to False for existing users
         asyncio.create_task(obito.migrate_metadata())
 
     async def migrate_metadata(obito):
-        """Set metadata=False for all existing users."""
         try:
             result = await obito.col.update_many(
                 {"metadata": {"$ne": False}},
@@ -65,7 +53,7 @@ class Database:
             join_date=datetime.date.today().isoformat(),
             file_id=None,
             caption=None,
-            metadata=False,  # Default off
+            metadata=False,
             metadata_code="Telegram : @Codeflix_Bots",
             format_template=None,
             ban_status=dict(
@@ -276,27 +264,17 @@ class Database:
             logging.error(f"Error setting video for user {user_id}: {e}")
 
     async def set_user_choice(obito, user_id: int, rename_mode: str) -> bool:
-        for attempt in range(3):
-            try:
-                await obito.col.update_one(
-                    {"_id": user_id},
-                    {
-                        "$set": {
-                            "rename_mode": rename_mode,
-                            "extra_name": "obito",
-                            "updated_at": datetime.datetime.utcnow()
-                        }
-                    },
-                    upsert=True
-                )
-                logging.info(f"Saved rename_mode '{rename_mode}' for user {user_id}")
-                return True
-            except Exception as e:
-                logging.error(f"Error saving user choice for {user_id}, attempt {attempt+1}: {str(e)}")
-                if attempt < 2:
-                    await asyncio.sleep(1)
-                else:
-                    return False
+        try:
+            await obito.col.update_one(
+                {"_id": user_id},
+                {"$set": {"rename_mode": rename_mode}},
+                upsert=True
+            )
+            logging.info(f"Saved rename_mode '{rename_mode}' for user {user_id}")
+            return True
+        except Exception as e:
+            logging.error(f"Error saving user choice for {user_id}: {str(e)}")
+            return False
 
     async def get_user_choice(obito, user_id: int) -> Optional[str]:
         try:
@@ -312,7 +290,7 @@ class Database:
         try:
             result = await obito.col.update_one(
                 {"_id": user_id},
-                {"$unset": {"rename_mode": "", "extra_name": "", "updated_at": ""}}
+                {"$unset": {"rename_mode": ""}}
             )
             logging.info(f"Deleted rename_mode for user {user_id}")
             return result.modified_count > 0
@@ -339,5 +317,4 @@ class Database:
             logging.error(f"Error sending file to DUMP_CHANNEL: {str(e)}")
             return False
 
-# Initialize the database
 codeflixbots = Database()
