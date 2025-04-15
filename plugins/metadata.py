@@ -8,7 +8,6 @@ from config import Txt
 async def metadata(client, message):
     user_id = message.from_user.id
 
-    # Fetch user metadata from the database
     current = await db.get_metadata(user_id)
     title = await db.get_title(user_id)
     author = await db.get_author(user_id)
@@ -17,7 +16,6 @@ async def metadata(client, message):
     audio = await db.get_audio(user_id)
     subtitle = await db.get_subtitle(user_id)
 
-    # Display the current metadata
     text = f"""
 **㊋ Yᴏᴜʀ Mᴇᴛᴀᴅᴀᴛᴀ ɪꜱ ᴄᴜʀʀᴇɴᴛʟʏ: {current}**
 
@@ -29,7 +27,6 @@ async def metadata(client, message):
 **◈ Vɪᴅᴇᴏ ▹** `{video if video else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
     """
 
-    # Inline buttons to toggle metadata
     buttons = [
         [
             InlineKeyboardButton(f"On{' ✅' if current == 'On' else ''}", callback_data='on_metadata'),
@@ -42,7 +39,6 @@ async def metadata(client, message):
     keyboard = InlineKeyboardMarkup(buttons)
 
     await message.reply_text(text=text, reply_markup=keyboard, disable_web_page_preview=True)
-
 
 @Client.on_callback_query(filters.regex(r"on_metadata|off_metadata|metainfo"))
 async def metadata_callback(client, query: CallbackQuery):
@@ -66,7 +62,6 @@ async def metadata_callback(client, query: CallbackQuery):
         )
         return
 
-    # Fetch updated metadata after toggling
     current = await db.get_metadata(user_id)
     title = await db.get_title(user_id)
     author = await db.get_author(user_id)
@@ -75,7 +70,6 @@ async def metadata_callback(client, query: CallbackQuery):
     audio = await db.get_audio(user_id)
     subtitle = await db.get_subtitle(user_id)
 
-    # Updated metadata message after toggle
     text = f"""
 **㊋ Yᴏᴜʀ Mᴇᴛᴀᴅᴀᴛᴀ ɪꜱ ᴄᴜʀʀᴇɴᴛʟʏ: {current}**
 
@@ -87,7 +81,6 @@ async def metadata_callback(client, query: CallbackQuery):
 **◈ Vɪᴅᴇᴏ ▹** `{video if video else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
     """
 
-    # Update inline buttons
     buttons = [
         [
             InlineKeyboardButton(f"On{' ✅' if current == 'On' else ''}", callback_data='on_metadata'),
@@ -98,7 +91,6 @@ async def metadata_callback(client, query: CallbackQuery):
         ]
     ]
     await query.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
-
 
 @Client.on_message(filters.private & filters.command('settitle'))
 async def title(client, message):
@@ -153,3 +145,4 @@ async def video(client, message):
     video = message.text.split(" ", 1)[1]
     await db.set_video(message.from_user.id, video=video)
     await message.reply_text("**✅ Vɪᴅᴇᴏ Sᴀᴠᴇᴅ**")
+
