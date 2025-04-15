@@ -54,7 +54,6 @@ QUALITY_PATTERNS = [
 def sanitize_filename(filename, keep_extension=True):
     if not filename:
         return "unnamed_file"
-    # Split name and extension
     name, ext = os.path.splitext(filename) if keep_extension else (filename, "")
     clean = re.sub(r'[^a-zA-Z0-9\s\-\[\]\(\)\.]', '_', name)
     clean = re.sub(r'\s+', ' ', clean).strip('_ ')
@@ -86,9 +85,9 @@ def extract_metadata(input_text, rename_mode):
     logger.warning(f"No metadata matched for {rename_mode}: {input_text}")
     return None, None, None, None
 
-def extract_quality(input_text, rename_mode):
+def extract_quality(filename):
     if not filename:
-        return "Unknown"
+        return "UNKNOWN"
     for pattern, extractor in QUALITY_PATTERNS:
         match = pattern.search(filename)
         if match:
@@ -96,7 +95,7 @@ def extract_quality(input_text, rename_mode):
             logger.info(f"Extracted quality: {quality}")
             return quality
     logger.warning(f"No quality matched for {filename}")
-    return "Unknown"
+    return "UNKNOWN"
 
 async def cleanup_files(*paths):
     for path in paths:
@@ -210,300 +209,195 @@ async def process_file(client, message):
     metadata_path = None
     thumb_path = None
 
-    if format_template:
-        if message.document:
-            file_id = message.document.file_id
-            file_name = message.document.file_name or "document"
-            file_size = message.document.file_size
-            media_type = "document"
-        elif message.video:
-            file_id = message.video.file_id
-            file_name = message.video.file_name or "video"
-            file_size = message.video.file_size
-            media_type = "video"
-        elif message.audio:
-            file_id = message.audio.file_id
-            file_name = message.audio.file_name or "audio"
-            file_size = message.audio.file_size
-            media_type = "audio"
-        else:
-            return await message.reply_text("Unsupported file type")
+    if message.document:
+        file_id = message.document.file_id
+        file_name = message.document.file_name or "document"
+        file_size = message.document.file_size
+        media_type = "document"
+    elif message.video:
+        file_id = message.video.file_id
+        file_name = message.video.file_name or "video"
+        file_size = message.video.file_size
+        media_type = "video"
+    elif message.audio:
+        file_id = message.audio.file_id
+        file_name = message.audio.file_name or "audio"
+        file_size = message.audio.file_size
+        media_type = "audio"
+    else:
+        return await message.reply_text("Unsupported file type")
 
-        if await check_anti_nsfw(file_name, message):
-            return await message.reply_text("NSFW content detected")
+    if await check_anti_nsfw(file_name, message):
+        return await message.reply_text("NSFW content detected")
 
-        if file_id in renaming_operations:
-            if (datetime.now() - renaming_operations[file_id]).seconds < 10:
-                return
-        renaming_operations[file_id] = datetime.now()
+    if file_id in renaming_operations:
+        if (datetime.now() - renaming_operations[file_id]).seconds < 10:
+            return
+    renaming_operations[file_id] = datetime.now()
 
-        try:
-            # Extract metadata from filename or caption
-            input_text = file_name if rename_mode == "filename" else (message.caption or file_name)
-            volume, chapter, season, episode = extract_metadata(input_text, rename_mode)
-            quality = extract_quality(file_name)
-            
-            # Detect template extension
-            template_ext_match = re.search(r'\.([a-zA-Z0-9]+)$', format_template)
-            template_ext = f".{template_ext_match.group(1)}" if template_ext_match else None
-            original_ext = os.path.splitext(file_name)[1] or ('.mp4' if media_type == "video" else '.mp3')
+    try:
+        # Default renaming if no mode set
+        if not rename_mode:
+            rename_mode = "filename"  # Default to filename-based renaming
+            logger.info(f"No rename_mode set for user {user_id}, defaulting to filename")
 
-            # Use template extension if provided, else original
-            target_ext = template_ext if template_ext else original_ext
-            
-            replacements = {
-                '{volume}': volume or 'XX',
-                '{chapter}': chapter or 'XX',
-                '{season}': season or 'XX',
-                '{episode}': episode or 'XX',
-                '{quality}': quality,
-                'Volume': volume or 'XX',
-                'Chapter': chapter or 'XX',
-                'Season': season or 'XX',
-                'Episode': episode or 'XX',
-                'QUALITY': quality
-            }
-            
-            # Remove extension from template for processing
+        # Extract metadata from filename or caption
+        input_text = file_name if rename_mode == "filename" else (message.caption or file_name)
+        volume, chapter, season, episode = extract_metadata(input_text, rename_mode)
+        quality = extract_quality(file_name)
+
+        # Use format_template if available, else fallback to filename
+        if format_template:
             new_template = format_template
-            if template_ext:
-                new_template = re.sub(r'\.[a-zA-Z0-9]+$', '', format_template)
-            
-            for placeholder, value in replacements.items():
-                new_template = new_template.replace(placeholder, str(value))
-            
-            if not new_template.strip():
-                new_template = f"file_{user_id}"
-            
-            new_filename = sanitize_filename(f"{new_template}{target_ext}")
-            download_path = f"downloads/{new_filename}"
-            metadata_path = f"metadata/{new_filename}"
-            
-            os.makedirs(os.path.dirname(download_path), exist_ok=True)
-            os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
+        else:
+            new_template = os.path.splitext(file_name)[0]  # Use filename without extension
+            logger.info(f"No format_template for user {user_id}, using filename: {new_template}")
 
-            msg = await message.reply_text("**Downloading...**")
-            start_time = time.time()
-            download_task = asyncio.create_task(client.download_media(
-                message,
-                file_name=download_path,
-                progress=progress_for_pyrogram,
-                progress_args=("Downloading...", msg, time.time())
-            ))
-            user_tasks[user_id].append(download_task)
-            try:
-                file_path = await download_task
-            except asyncio.CancelledError:
-                logger.info(f"Download cancelled for user {user_id}")
-                await msg.edit("Task cancelled.")
-                return
-            except ChatAdminRequired:
-                logger.error(f"ChatAdminRequired during download")
-                await msg.edit("Error: Bot lacks admin rights.")
-                await send_log(client, message.from_user, f"Download failed: Bot lacks admin rights")
-                return
-            except Exception as e:
-                logger.error(f"Download failed for user {user_id}: {e}")
-                await msg.edit(f"Download failed: {e}")
-                await send_log(client, message.from_user, f"Download failed: {str(e)}")
-                return
+        # Detect template extension
+        template_ext_match = re.search(r'\.([a-zA-Z0-9]+)$', new_template)
+        template_ext = f".{template_ext_match.group(1)}" if template_ext_match else None
+        original_ext = os.path.splitext(file_name)[1] or ('.mp4' if media_type == "video" else '.mp3')
+        target_ext = template_ext if template_ext else original_ext
 
-            metadata_enabled = await codeflixbots.get_metadata(user_id)
-            if metadata_enabled:
-                await msg.edit("**Processing metadata...**")
-                try:
-                    if await add_metadata(file_path, metadata_path, user_id):
-                        if os.path.exists(metadata_path):
-                            file_path = metadata_path
-                        else:
-                            logger.warning(f"Metadata file {metadata_path} not found, using {file_path}")
-                    else:
-                        logger.info(f"No metadata applied for user {user_id}")
-                except Exception as e:
-                    logger.error(f"Metadata processing failed for user {user_id}: {e}")
-                    await msg.edit(f"Metadata processing failed, proceeding without metadata: {e}")
-                    await send_log(client, message.from_user, f"Metadata processing failed: {str(e)}")
-            else:
-                logger.info(f"Metadata disabled for user {user_id}")
+        # Remove extension from template for processing
+        if template_ext:
+            new_template = re.sub(r'\.[a-zA-Z0-9]+$', '', new_template)
 
-            await msg.edit("**Preparing upload...**")
-            caption = await codeflixbots.get_caption(user_id) or f"**{new_filename}**"
-            thumb = await codeflixbots.get_thumbnail(user_id)
-            thumb_path = None
+        # Replace placeholders with UNKNOWN for missing values
+        replacements = {
+            '{volume}': volume or 'UNKNOWN',
+            '{chapter}': chapter or 'UNKNOWN',
+            '{season}': season or 'UNKNOWN',
+            '{episode}': episode or 'UNKNOWN',
+            '{quality}': quality,
+            'Volume': volume or 'UNKNOWN',
+            'Chapter': chapter or 'UNKNOWN',
+            'Season': season or 'UNKNOWN',
+            'Episode': episode or 'UNKNOWN',
+            'QUALITY': quality
+        }
 
-            if thumb:
-                thumb_path = await client.download_media(thumb)
-            elif media_type == "video" and message.video and message.video.thumbs:
-                thumb_path = await client.download_media(message.video.thumbs[0].file_id)
-            
-            thumb_path = await process_thumbnail(thumb_path)
+        for placeholder, value in replacements.items():
+            new_template = new_template.replace(placeholder, str(value))
 
-            await msg.edit("**Uploading...**")
-            if not os.path.exists(file_path):
-                logger.error(f"Upload failed: File {file_path} does not exist")
-                await msg.edit(f"Upload failed: File {new_filename} not found")
-                await send_log(client, message.from_user, f"Upload failed: File {file_path} missing")
-                return
-            
-            upload_start = time.time()
-            upload_task = asyncio.create_task(client.send_document(
-                chat_id=message.chat.id,
-                document=file_path,
-                caption=caption,
-                thumb=thumb_path,
-                progress=progress_for_pyrogram,
-                progress_args=("Uploading...", msg, time.time())
-            ))
-            user_tasks[user_id].append(upload_task)
-            try:
-                sent_message = await upload_task
-                logger.info(f"Uploaded to user in {time.time() - upload_start:.2f}s")
-                await msg.delete()
-            except asyncio.CancelledError:
-                logger.info(f"Upload cancelled for user {user_id}")
-                await msg.edit("Task cancelled.")
-                return
-            except ChatAdminRequired:
-                logger.error(f"ChatAdminRequired during upload")
-                await msg.edit("Error: Bot lacks admin rights.")
-                await send_log(client, message.from_user, f"Upload failed: Bot lacks admin rights")
-                return
-            except Exception as e:
-                logger.error(f"Upload failed for user {user_id}: {e}")
-                await msg.edit(f"Upload failed: {e}")
-                await send_log(client, message.from_user, f"Upload failed: {str(e)}")
-                return
+        if not new_template.strip():
+            new_template = f"file_{user_id}"
 
- # Send to dump channel in background
-            try:
-                if os.path.exists(file_path):
-                    asyncio.create_task(send_to_dump_channel(client, sent_message, user_id))
-                else:
-                    logger.error(f"File {file_path} does not exist for dump channel")
-                    await send_log(client, message.from_user, f"Dump channel failed: File {file_path} missing")
-            except Exception as e:
-                logger.error(f"Dump channel send failed for user {user_id}: {e}")
-                await send_log(client, message.from_user, f"Dump channel send failed: {str(e)}")
+        new_filename = sanitize_filename(f"{new_template}{target_ext}")
+        download_path = f"downloads/{new_filename}"
+        metadata_path = f"metadata/{new_filename}"
 
+        os.makedirs(os.path.dirname(download_path), exist_ok=True)
+        os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
+
+        msg = await message.reply_text("**Downloading...**")
+        start_time = time.time()
+        download_task = asyncio.create_task(client.download_media(
+            message,
+            file_name=download_path,
+            progress=progress_for_pyrogram,
+            progress_args=("Downloading...", msg, time.time())
+        ))
+        user_tasks[user_id].append(download_task)
+        try:
+            file_path = await download_task
+        except asyncio.CancelledError:
+            logger.info(f"Download cancelled for user {user_id}")
+            await msg.edit("Task cancelled.")
+            return
+        except ChatAdminRequired:
+            logger.error(f"ChatAdminRequired during download")
+            await msg.edit("Error: Bot lacks admin rights.")
+            await send_log(client, message.from_user, f"Download failed: Bot lacks admin rights")
+            return
         except Exception as e:
-            logger.error(f"Processing error for user {user_id}: {e}")
-            await message.reply_text(f"Error: {str(e)}")
-            await send_log(client, message.from_user, f"Processing error: {str(e)}")
-        finally:
-            await cleanup_files(download_path, metadata_path, thumb_path)
-            renaming_operations.pop(file_id, None)
-            user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
-
-    elif rename_mode:
-        if not message.document:
-            await message.reply_text("Please send a document for extraction mode.")
+            logger.error(f"Download failed for user {user_id}: {e}")
+            await msg.edit(f"Download failed: {e}")
+            await send_log(client, message.from_user, f"Download failed: {str(e)}")
             return
 
-        file = message.document
-        file_id = file.file_id
-        new_name = ""
-        input_text = file.file_name if rename_mode == "filename" else (message.caption or "")
-
-        try:
-            logger.info(f"Processing file for user {user_id} with rename_mode {rename_mode}")
-            volume, chapter, season, episode = extract_metadata(input_text, rename_mode)
-            if volume or chapter:
-                base_name = f"Vol{volume or 'XX'}Ch{chapter or 'XX'}"
-            elif season or episode:
-                base_name = f"S{season or 'XX'}E{episode or 'XX'}"
-            else:
-                base_name = input_text or f"unnamed_{user_id}"
-
-            extension = file.file_name.split('.')[-1] if '.' in file.file_name else 'bin'
-            new_name = sanitize_filename(f"{base_name}.{extension}")
-            await message.reply_text(f"Renaming using {rename_mode}: {new_name}")
-
-            logger.info(f"Downloading {file.file_name} for user {user_id}")
-            download_task = asyncio.create_task(client.download_media(file))
-            user_tasks[user_id].append(download_task)
+        metadata_enabled = await codeflixbots.get_metadata(user_id)
+        if metadata_enabled:
+            await msg.edit("**Processing metadata...**")
             try:
-                file_path = await download_task
-            except asyncio.CancelledError:
-                logger.info(f"Download cancelled for user {user_id}")
-                await message.reply_text("Task cancelled.")
-                return
-            except ChatAdminRequired:
-                logger.error(f"ChatAdminRequired during download")
-                await message.reply_text("Error: Bot lacks admin rights.")
-                await send_log(client, message.from_user, f"Download failed: Bot lacks admin rights")
-                return
-            except Exception as e:
-                logger.error(f"Download error for user {user_id}: {e}")
-                await message.reply_text(f"Error downloading: {e}")
-                await send_log(client, message.from_user, f"Download error: {str(e)}")
-                return
-
-            renamed_file_path = f"downloads/{new_name}"
-            logger.info(f"Renaming to {renamed_file_path}")
-            os.makedirs("downloads", exist_ok=True)
-            os.rename(file_path, renamed_file_path)
-
-            logger.info(f"Uploading {new_name} for user {user_id}")
-            if not os.path.exists(renamed_file_path):
-                logger.error(f"Upload failed: File {renamed_file_path} does not exist")
-                await message.reply_text(f"Upload failed: File {new_name} not found")
-                await send_log(client, message.from_user, f"Upload failed: File {renamed_file_path} missing")
-                return
-            
-            upload_task = asyncio.create_task(client.send_document(
-                chat_id=message.chat.id,
-                document=renamed_file_path,
-                file_name=new_name
-            ))
-            user_tasks[user_id].append(upload_task)
-            try:
-                sent_message = await upload_task
-            except asyncio.CancelledError:
-                logger.info(f"Upload cancelled for user {user_id}")
-                await message.reply_text("Task cancelled.")
-                return
-            except ChatAdminRequired:
-                logger.error(f"ChatAdminRequired during upload")
-                await message.reply_text("Error: Bot lacks admin rights.")
-                await send_log(client, message.from_user, f"Upload failed: Bot lacks admin rights")
-                return
-            except Exception as e:
-                logger.error(f"Upload error for user {user_id}: {e}")
-                await message.reply_text(f"Error uploading: {e}")
-                await send_log(client, message.from_user, f"Upload error: {str(e)}")
-                return
-
-            # Send to dump channel in background
-            try:
-                if os.path.exists(renamed_file_path):
-                    logger.info(f"Sending {new_name} to dump channel for user {user_id}")
-                    asyncio.create_task(send_to_dump_channel(client, sent_message, user_id))
+                if await add_metadata(file_path, metadata_path, user_id):
+                    if os.path.exists(metadata_path):
+                        file_path = metadata_path
+                    else:
+                        logger.warning(f"Metadata file {metadata_path} not found, using {file_path}")
                 else:
-                    logger.error(f"File {renamed_file_path} does not exist for dump channel")
-                    await send_log(client, message.from_user, f"Dump channel failed: File {renamed_file_path} missing")
+                    logger.info(f"No metadata applied for user {user_id}")
             except Exception as e:
-                logger.error(f"Dump channel send failed for user {user_id}: {e}")
-                await send_log(client, message.from_user, f"Dump channel send failed: {str(e)}")
+                logger.error(f"Metadata processing failed for user {user_id}: {e}")
+                await msg.edit(f"Metadata processing failed, proceeding without metadata: {e}")
+                await send_log(client, message.from_user, f"Metadata processing failed: {str(e)}")
+        else:
+            logger.info(f"Metadata disabled for user {user_id}")
 
-            os.remove(renamed_file_path)
-            await codeflixbots.delete_user_choice(user_id)
-            logger.info(f"File processed, choice deleted for user {user_id}")
+        await msg.edit("**Preparing upload...**")
+        caption = await codeflixbots.get_caption(user_id) or f"**{new_filename}**"
+        thumb = await codeflixbots.get_thumbnail(user_id)
+        thumb_path = None
 
+        if thumb:
+            thumb_path = await client.download_media(thumb)
+        elif media_type == "video" and message.video and message.video.thumbs:
+            thumb_path = await client.download_media(message.video.thumbs[0].file_id)
+        
+        thumb_path = await process_thumbnail(thumb_path)
+
+        await msg.edit("**Uploading...**")
+        if not os.path.exists(file_path):
+            logger.error(f"Upload failed: File {file_path} does not exist")
+            await msg.edit(f"Upload failed: File {new_filename} not found")
+            await send_log(client, message.from_user, f"Upload failed: File {file_path} missing")
+            return
+        
+        upload_start = time.time()
+        upload_task = asyncio.create_task(client.send_document(
+            chat_id=message.chat.id,
+            document=file_path,
+            caption=caption,
+            thumb=thumb_path,
+            progress=progress_for_pyrogram,
+            progress_args=("Uploading...", msg, time.time())
+        ))
+        user_tasks[user_id].append(upload_task)
+        try:
+            sent_message = await upload_task
+            logger.info(f"Uploaded to user in {time.time() - upload_start:.2f}s")
+            await msg.delete()
+        except asyncio.CancelledError:
+            logger.info(f"Upload cancelled for user {user_id}")
+            await msg.edit("Task cancelled.")
+            return
         except ChatAdminRequired:
-            logger.error(f"ChatAdminRequired in file processing")
-            await message.reply_text("Error: Bot lacks admin rights.")
-            await send_log(client, message.from_user, f"Processing error: Bot lacks admin rights")
+            logger.error(f"ChatAdminRequired during upload")
+            await msg.edit("Error: Bot lacks admin rights.")
+            await send_log(client, message.from_user, f"Upload failed: Bot lacks admin rights")
+            return
         except Exception as e:
-            logger.error(f"Processing error for user {user_id}: {e}")
-            if "ffmpeg" in str(e).lower():
-                await message.reply_text("Error: FFmpeg not installed. Contact admin.")
-                await send_log(client, message.from_user, f"FFmpeg error: {str(e)}")
+            logger.error(f"Upload failed for user {user_id}: {e}")
+            await msg.edit(f"Upload failed: {e}")
+            await send_log(client, message.from_user, f"Upload failed: {str(e)}")
+            return
+
+        # Send to dump channel in background
+        try:
+            if os.path.exists(file_path):
+                asyncio.create_task(send_to_dump_channel(client, sent_message, user_id))
             else:
-                await message.reply_text(f"Error processing file: {e}")
-                await send_log(client, message.from_user, f"Processing error: {str(e)}")
-        finally:
-            user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
-    else:
-        await message.reply_text("Use /extraction to set a rename mode.")
+                logger.error(f"File {file_path} does not exist for dump channel")
+                await send_log(client, message.from_user, f"Dump channel failed: File {file_path} missing")
+        except Exception as e:
+            logger.error(f"Dump channel send failed for user {user_id}: {e}")
+            await send_log(client, message.from_user, f"Dump channel send failed: {str(e)}")
 
-
+    except Exception as e:
+        logger.error(f"Processing error for user {user_id}: {e}")
+        await message.reply_text(f"Error: {str(e)}")
+        await send_log(client, message.from_user, f"Processing error: {str(e)}")
+    finally:
+        await cleanup_files(download_path, metadata_path, thumb_path)
+        renaming_operations.pop(file_id, None)
+        user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
