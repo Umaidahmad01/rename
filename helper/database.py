@@ -36,7 +36,6 @@ class Database:
         # Async collections
         obito.codeflixbots = obito._async_client[db_name]
         obito.col = obito.codeflixbots.user
-        obito.tasks = obito.codeflixbots.tasks  # New tasks collection
 
         # Sync collections (kept for compatibility)
         obito.db = obito.client[db_name]
@@ -264,49 +263,6 @@ class Database:
             return result.modified_count > 0
         except Exception as e:
             logging.error(f"Error deleting user choice for {user_id}: {str(e)}")
-            return False
-
-    # Task management for queue
-    async def add_task(obito, user_id: int, file_id: str, file_name: str, task_type: str = "rename") -> bool:
-        """
-        Save a task (e.g., file to rename) in the tasks collection
-        """
-        try:
-            await obito.tasks.insert_one({
-                "user_id": user_id,
-                "file_id": file_id,
-                "file_name": file_name,
-                "task_type": task_type,
-                "created_at": datetime.datetime.utcnow()
-            })
-            logging.info(f"Added task for user {user_id}, file {file_id}")
-            return True
-        except Exception as e:
-            logging.error(f"Error adding task for user {user_id}: {str(e)}")
-            return False
-
-    async def get_user_tasks(obito, user_id: int) -> list:
-        """
-        Retrieve all tasks for a user
-        """
-        try:
-            tasks = await obito.tasks.find({"user_id": user_id}).to_list(None)
-            logging.info(f"Retrieved {len(tasks)} tasks for user {user_id}")
-            return tasks
-        except Exception as e:
-            logging.error(f"Error retrieving tasks for user {user_id}: {str(e)}")
-            return []
-
-    async def delete_user_tasks(obito, user_id: int) -> bool:
-        """
-        Delete all tasks for a user
-        """
-        try:
-            result = await obito.tasks.delete_many({"user_id": user_id})
-            logging.info(f"Deleted {result.deleted_count} tasks for user {user_id}")
-            return result.deleted_count > 0
-        except Exception as e:
-            logging.error(f"Error deleting tasks for user {user_id}: {str(e)}")
             return False
 
     async def send_to_dump_channel(obito, client, file_path: str, caption: str = None) -> bool:
