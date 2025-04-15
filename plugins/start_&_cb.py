@@ -4,6 +4,10 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from helper.database import *
 from config import *
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 
 # Initialize MongoDB
 db: Database = Database(DB_URL, DB_NAME)
@@ -244,8 +248,6 @@ async def help_command(client, message):
         ])
     )
 
-
-
 @Client.on_message(filters.command("extraction") & filters.private)
 async def extraction_command(client: Client, message: Message) -> None:
     keyboard: List[List[InlineKeyboardButton]] = [
@@ -263,8 +265,14 @@ async def extraction_command(client: Client, message: Message) -> None:
 async def handle_callback(client: Client, callback_query: CallbackQuery) -> None:
     try:
         choice: str = callback_query.data
+        if choice not in ["filename", "filecaption"]:
+            await callback_query.message.reply_text("Error: Invalid option selected.")
+            await callback_query.answer("Unknown option!")
+            return
+
         user_id: int = callback_query.from_user.id
 
+        # Update keyboard with checkmark
         original_keyboard: List[List[InlineKeyboardButton]] = callback_query.message.reply_markup.inline_keyboard
         updated_keyboard: List[List[InlineKeyboardButton]] = []
         for row in original_keyboard:
@@ -280,23 +288,33 @@ async def handle_callback(client: Client, callback_query: CallbackQuery) -> None
             reply_markup=InlineKeyboardMarkup(updated_keyboard)
         )
 
+        # Save choice to database
         if choice == "filename":
+            success = await db.set_user_choice(user_id, "filename")
+            if not success:
+                await callback_query.message.reply_text("Error: Failed to save your choice.")
+                await callback_query.answer("Database error!")
+                return
             await callback_query.message.reply_text("Please send the file, and I'll rename it using its filename.")
-            db.set_user_choice(user_id, "filename")
 
         elif choice == "filecaption":
+            success = await db.set_user_choice(user_id, "filecaption")
+            if not success:
+                await callback_query.message.reply_text("Error: Failed to save your choice.")
+                await callback_query.answer("Database error!")
+                return
             await callback_query.message.reply_text("Please send the file, and I'll rename it using its caption.")
-            db.set_user_choice(user_id, "filecaption")
 
         await callback_query.answer("Option selected!")
     except Exception as e:
-        await callback_query.message.reply_text(f"Error occurred: {str(e)}")
+        logging.error(f"Callback error for user {callback_query.from_user.id}: {str(e)}")
+        await callback_query.message.reply_text(f"Error: {str(e)}")
         await callback_query.answer("Something went wrong!")
 
 @Client.on_message(filters.document & filters.private)
 async def handle_file(client: Client, message: Message) -> None:
     user_id: int = message.from_user.id
-    rename_mode: Optional[str] = db.get_user_choice(user_id)
+    rename_mode: Optional[str] = await db.get_user_choice(user_id)
 
     if not rename_mode:
         await message.reply_text("Please use /extraction first to choose a rename mode.")
@@ -333,7 +351,9 @@ async def handle_file(client: Client, message: Message) -> None:
         )
 
         os.remove(renamed_file_path)
-        db.delete_user_choice(user_id)
+        await db.delete_user_choice(user_id)
 
     except Exception as e:
+        logging.error(f"File handling error for user {user_id}: {str(e)}")
         await message.reply_text(f"Error while processing file: {str(e)}")
+        
