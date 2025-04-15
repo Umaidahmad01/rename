@@ -8,7 +8,7 @@ from datetime import datetime
 from PIL import Image
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait, MessageNotModified, ChatAdminRequired
-from pyrogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
 from plugins.antinsfw import check_anti_nsfw
@@ -26,13 +26,13 @@ renaming_operations = {}
 user_tasks = {}
 
 SEASON_EPISODE_PATTERNS = [
-    (re.compile(r'S(\d+)(?:E|EP)(\d+)'), ('season', 'episode')),
-    (re.compile(r'S(\d+)[\s-]*(?:E|EP)(\d+)'), ('season', 'episode')),
+    (re.compile(r'S(\d+)(?:E|EP)(\d+)', re.IGNORECASE), ('season', 'episode')),
+    (re.compile(r'S(\d+)[\s-]*(?:E|EP)(\d+)', re.IGNORECASE), ('season', 'episode')),
     (re.compile(r'Season\s*(\d+)\s*Episode\s*(\d+)', re.IGNORECASE), ('season', 'episode')),
-    (re.compile(r'\[S(\d+)\]\[E(\d+)\]'), ('season', 'episode')),
-    (re.compile(r'S(\d+)[^\d]*(\d+)'), ('season', 'episode')),
+    (re.compile(r'\[S(\d+)\]\[E(\d+)\]', re.IGNORECASE), ('season', 'episode')),
+    (re.compile(r'S(\d+)[^\d]*(\d+)', re.IGNORECASE), ('season', 'episode')),
     (re.compile(r'(?:E|EP|Episode)\s*(\d+)', re.IGNORECASE), (None, 'episode')),
-    (re.compile(r'\b(\d+)\b'), (None, 'episode'))
+    (re.compile(r'\b(\d+)\b', re.IGNORECASE), (None, 'episode'))
 ]
 
 QUALITY_PATTERNS = [
@@ -45,23 +45,23 @@ QUALITY_PATTERNS = [
 ]
 
 def sanitize_filename(filename):
-    """Remove unsafe characters and normalize filename."""
     if not filename:
         return "unnamed_file"
     clean = re.sub(r'[^a-zA-Z0-9\s\-\[\]\(\)\.]', '_', filename)
     clean = re.sub(r'\s+', ' ', clean).strip('_ ')
     clean = clean.replace('..', '.').replace('__', '_')
-    return clean[:100]  # Limit length
+    return clean[:100]
 
 def extract_season_episode(input_text, rename_mode):
     if not input_text:
         logger.warning(f"No input text for rename_mode {rename_mode}")
         return None, None
+    input_text = str(input_text)  # Ensure string
     for pattern, (season_group, episode_group) in SEASON_EPISODE_PATTERNS:
         match = pattern.search(input_text)
         if match:
             season = match.group(1) if season_group else None
-            episode = match.group(2) if episode_group else match.group(1)
+            episode = match.group(2) if episode_group and len(match.groups()) >= 2 else match.group(1)
             logger.info(f"Extracted season: {season}, episode: {episode} from {rename_mode}")
             return season, episode
     logger.warning(f"No season/episode matched for {rename_mode}: {input_text}")
@@ -115,7 +115,7 @@ async def add_metadata(input_path, output_path, user_id):
             'audio_title': await codeflixbots.get_audio(user_id),
             'subtitle': await codeflixbots.get_subtitle(user_id)
         }
-        cmd = [ffmpeg, '-i', input_path, '-map', '0', '-c', 'copy', '-loglevel', "error"]
+        cmd = [ffmpeg, '-i', input_path, '-map', '0', '-c', 'copy', '-loglevel', 'error']
         has_metadata = False
         for key, value in metadata.items():
             if value:
@@ -137,7 +137,7 @@ async def add_metadata(input_path, output_path, user_id):
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio Wsubprocess.PIPE
         )
         stdout, stderr = await process.communicate()
         
@@ -153,6 +153,7 @@ async def add_metadata(input_path, output_path, user_id):
         logger.error(f"Metadata processing failed: {e}")
         raise
 
+@Client.on_message((filters.document | filters.video | filters.audio) & filters.private)
 async def process_file(client, message):
     user_id = message.from_user.id
     format_template = await codeflixbots.get_format_template(user_id)
@@ -309,10 +310,10 @@ async def process_file(client, message):
                 await send_log(client, message.from_user, f"Upload failed: {str(e)}")
                 return
 
-            # Send to dump channel *after* successful upload to user
-            await msg.edit("**Sending to dump channel...**")
+            # Send to dump channel *after* user upload
             try:
                 if os.path.exists(file_path):
+                    await msg.edit("**Sending to dump channel...**")
                     await codeflixbots.send_to_dump_channel(client, file_path, f"Renamed: {new_filename}")
                 else:
                     logger.error(f"File {file_path} does not exist for dump channel")
@@ -407,10 +408,10 @@ async def process_file(client, message):
                 await send_log(client, message.from_user, f"Upload error: {str(e)}")
                 return
 
-            # Send to dump channel *after* successful upload to user
-            logger.info(f"Sending {new_name} to dump channel for user {user_id}")
+            # Send to dump channel *after* user upload
             try:
                 if os.path.exists(renamed_file_path):
+                    logger.info(f"Sending {new_name} to dump channel for user {user_id}")
                     await codeflixbots.send_to_dump_channel(client, renamed_file_path, f"Renamed: {new_name}")
                 else:
                     logger.error(f"File {renamed_file_path} does not exist for dump channel")
@@ -437,124 +438,5 @@ async def process_file(client, message):
                 await send_log(client, message.from_user, f"Processing error: {str(e)}")
         finally:
             user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
-    else:
-        await message.reply_text("Use /extraction to set a rename mode.")
-
-@Client.on_message(filters.command("extraction") & filters.private)
-async def extraction_command(client: Client, message: Message) -> None:
-    try:
-        keyboard = [
-            [InlineKeyboardButton("Filename", callback_data="extract_filename")],
-            [InlineKeyboardButton("Filecaption", callback_data="extract_filecaption")]
-        ]
-        await message.reply_text(
-            "Choose how to rename the file:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        logger.info(f"Sent extraction options to user {message.from_user.id}")
-        await send_log(client, message.from_user, "Started /extraction command")
-    except ChatAdminRequired:
-        logger.error(f"ChatAdminRequired in extraction_command")
-        await message.reply_text("Error: Bot lacks admin rights.")
-        await send_log(client, message.from_user, "Extraction command failed: Bot lacks admin rights")
-    except Exception as e:
-        logger.error(f"Error in extraction_command: {e}")
-        await message.reply_text("Error: Failed to send options.")
-        await send_log(client, message.from_user, f"Extraction command error: {str(e)}")
-
-@Client.on_callback_query()
-async def handle_callback(client: Client, callback_query: CallbackQuery) -> None:
-    user_id = callback_query.from_user.id
-    choice = callback_query.data
-    logger.info(f"Callback data for user {user_id}: '{choice}'")
-
-    try:
-        # Define valid choices
-        choice_map = {
-            "extract_filename": "filename",
-            "extract_filecaption": "filecaption"
-        }
-
-        if choice not in choice_map:
-            logger.warning(f"Invalid callback for user {user_id}: '{choice}'")
-            await callback_query.answer("Invalid option!", show_alert=True)
-            return
-
-        # Get the rename mode
-        db_choice = choice_map[choice]
-
-        # Update keyboard to reflect selection
-        updated_keyboard = [
-            [InlineKeyboardButton("Filename ✅" if db_choice == "filename" else "Filename", callback_data="extract_filename")],
-            [InlineKeyboardButton("Filecaption ✅" if db_choice == "filecaption" else "Filecaption", callback_data="extract_filecaption")]
-        ]
-
-        try:
-            await callback_query.message.edit_reply_markup(InlineKeyboardMarkup(updated_keyboard))
-            logger.info(f"Updated keyboard for user {user_id}")
-        except MessageNotModified:
-            logger.debug(f"Keyboard unchanged for user {user_id}")
-        except ChatAdminRequired:
-            logger.error(f"ChatAdminRequired for keyboard update")
-            await callback_query.message.reply_text("Error: Bot lacks admin rights.")
-            await callback_query.answer("Admin error!", show_alert=True)
-            await send_log(client, callback_query.from_user, "Keyboard update failed: Bot lacks admin rights")
-            return
-        except Exception as e:
-            logger.error(f"Keyboard update failed for user {user_id}: {e}")
-            await callback_query.message.reply_text("Error: Couldn't update buttons.")
-            await send_log(client, callback_query.from_user, f"Keyboard update error: {str(e)}")
-            return
-
-        # Save the user's choice
-        success = await codeflixbots.set_user_choice(user_id, db_choice)
-        if not success:
-            logger.error(f"Failed to save choice '{db_choice}' for user {user_id}")
-            await callback_query.message.reply_text("Error: Couldn't save your choice.")
-            await callback_query.answer("Database error!", show_alert=True)
-            await send_log(client, callback_query.from_user, f"Failed to save choice: {db_choice}")
-            return
-
-        await callback_query.message.reply_text(
-            f"Please send the file to rename using its {db_choice}."
-        )
-        await callback_query.answer("Option selected!")
-        await send_log(client, callback_query.from_user, f"Selected rename mode: {db_choice}")
-
-    except ChatAdminRequired:
-        logger.error(f"ChatAdminRequired in callback")
-        await callback_query.message.reply_text("Error: Bot lacks admin rights.")
-        await callback_query.answer("Admin error!", show_alert=True)
-        await send_log(client, callback_query.from_user, "Callback failed: Bot lacks admin rights")
-    except Exception as e:
-        logger.error(f"Callback error for user {user_id}: {e}")
-        await callback_query.message.reply_text("Error: Something went wrong.")
-        await callback_query.answer("Error!", show_alert=True)
-        await send_log(client, callback_query.from_user, f"Callback error: {str(e)}")
-
-@Client.on_message(filters.command("clear") & filters.private)
-async def clear_tasks(client: Client, message: Message) -> None:
-    user_id = message.from_user.id
-    logger.info(f"Clearing tasks for user {user_id}")
-    try:
-        # Clear running tasks
-        if user_id in user_tasks:
-            tasks = user_tasks[user_id]
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            user_tasks[user_id] = []
-            logger.info(f"Cleared {len(tasks)} tasks for user {user_id}")
-
-        # Clear rename mode
-        await codeflixbots.delete_user_choice(user_id)
-        await message.reply_text("All ongoing tasks and settings cleared!")
-        await send_log(client, message.from_user, "Cleared all tasks and settings")
-    except ChatAdminRequired:
-        logger.error(f"ChatAdminRequired in clear")
-        await message.reply_text("Error: Bot lacks admin rights.")
-        await send_log(client, message.from_user, "Clear command failed: Bot lacks admin rights")
-    except Exception as e:
-        logger.error(f"Error clearing tasks for user {user_id}: {e}")
-        await message.reply_text("Error: Couldn't clear tasks.")
-        await send_log(client, message.from_user, f"Clear command error: {str(e)}")
+           else:
+                await message.reply_text("Use /extraction to set a rename mode.")
