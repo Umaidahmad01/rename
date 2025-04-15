@@ -504,4 +504,4 @@ async def process_file(client, message):
         finally:
             user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
            else:
-                await message.reply_text("Use /extraction to set a rename mode.")
+               await message.reply_text("Use /extraction to set a rename mode.")
