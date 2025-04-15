@@ -67,11 +67,11 @@ def extract_season_episode(input_text, rename_mode):
     logger.warning(f"No season/episode matched for {rename_mode}: {input_text}")
     return None, None
 
-def extract_quality(filename):
+def extract_quality(input_text, rename_mode):
     if not filename:
         return "Unknown"
     for pattern, extractor in QUALITY_PATTERNS:
-        match = pattern.search(filename)
+        match = pattern.search(input_text, rename_mode)
         if match:
             quality = extractor(match)
             logger.info(f"Extracted quality: {quality}")
@@ -319,40 +319,20 @@ async def process_file(client, message):
                 progress_args=("Downloading...", msg, time.time())
             ))
             user_tasks[user_id].append(download_task)
-            try:
-                file_path = await download_task
-            except asyncio.CancelledError:
-                logger.info(f"Download cancelled for user {user_id}")
-                await msg.edit("Task cancelled.")
-                return
-            except ChatAdminRequired:
-                logger.error(f"ChatAdminRequired during download")
-                await msg.edit("Error: Bot lacks admin rights.")
-                await send_log(client, message.from_user, f"Download failed: Bot lacks admin rights")
-                return
-            except Exception as e:
-                logger.error(f"Download failed for user {user_id}: {e}")
-                await msg.edit(f"Download failed: {e}")
-                await send_log(client, message.from_user, f"Download failed: {str(e)}")
-                return
+            file_path = await download_task
 
             metadata_enabled = await codeflixbots.get_metadata(user_id)
             if metadata_enabled:
                 await msg.edit("**Processing metadata...**")
                 try:
                     if await metadata_module.add_metadata(file_path, metadata_path, user_id):
-                        if os.path.exists(metadata_path):
-                            file_path = metadata_path
-                        else:
-                            logger.warning(f"Metadata file {metadata_path} not found, using {file_path}")
+                        file_path = metadata_path
                     else:
                         logger.info(f"No metadata applied for user {user_id}")
                 except Exception as e:
                     logger.error(f"Metadata processing failed for user {user_id}: {e}")
                     await msg.edit(f"Metadata processing failed, proceeding without metadata: {e}")
                     await send_log(client, message.from_user, f"Metadata processing failed: {str(e)}")
-            else:
-                logger.info(f"Metadata disabled for user {user_id}")
 
             await msg.edit("**Preparing upload...**")
             caption = await codeflixbots.get_caption(user_id) or f"**{new_filename}**"
@@ -382,36 +362,13 @@ async def process_file(client, message):
                 progress_args=("Uploading...", msg, time.time())
             ))
             user_tasks[user_id].append(upload_task)
-            try:
-                await upload_task
-                await msg.delete()
-                await codeflixbots.add_upload(user_id, new_filename)
-            except asyncio.CancelledError:
-                logger.info(f"Upload cancelled for user {user_id}")
-                await msg.edit("Task cancelled.")
-                return
-            except ChatAdminRequired:
-                logger.error(f"ChatAdminRequired during upload")
-                await msg.edit("Error: Bot lacks admin rights.")
-                await send_log(client, message.from_user, f"Upload failed: Bot lacks admin rights")
-                return
-            except Exception as e:
-                logger.error(f"Upload failed for user {user_id}: {e}")
-                await msg.edit(f"Upload failed: {e}")
-                await send_log(client, message.from_user, f"Upload failed: {str(e)}")
-                return
+            await upload_task
+            await msg.delete()
+            await codeflixbots.add_upload(user_id, new_filename)
 
             await msg.edit("**Sending to dump channel...**")
             caption = f"{new_filename} {telegram_handle or ''}"
-            try:
-                if os.path.exists(file_path):
-                    await codeflixbots.send_to_dump_channel(client, file_path, caption)
-                else:
-                    logger.error(f"File {file_path} does not exist for dump channel")
-                    await send_log(client, message.from_user, f"Dump channel failed: File {file_path} missing")
-            except Exception as e:
-                logger.error(f"Dump channel send failed for user {user_id}: {e}")
-                await send_log(client, message.from_user, f"Dump channel send failed: {str(e)}")
+            await codeflixbots.send_to_dump_channel(client, file_path, caption)
 
         except Exception as e:
             logger.error(f"Processing error for user {user_id}: {e}")
@@ -429,17 +386,11 @@ async def process_file(client, message):
 
         file = message.document
         file_id = file.file_id
-        new_name = ""
         input_text = file.file_name if rename_mode == "filename" else (message.caption or "")
 
         try:
-            logger.info(f"Processing file for user {user_id} with rename_mode {rename_mode}")
             season, episode = extract_season_episode(input_text, rename_mode)
-            if season or episode:
-                base_name = f"S{season or 'XX'}E{episode or 'XX'}"
-            else:
-                base_name = input_text or f"unnamed_{user_id}"
-
+            base_name = f"S{season or 'XX'}E{episode or 'XX'}" if (season or episode) else (input_text or f"unnamed_{user_id}")
             if telegram_handle:
                 base_name += f" {telegram_handle}"
 
@@ -447,60 +398,56 @@ async def process_file(client, message):
             new_name = sanitize_filename(f"{base_name}.{extension}", telegram_handle)
             await message.reply_text(f"Renaming using {rename_mode}: {new_name}")
 
-            logger.info(f"Downloading {file.file_name} for user {user_id}")
             download_task = asyncio.create_task(client.download_media(file))
             user_tasks[user_id].append(download_task)
-            try:
-                file_path = await download_task
-            except asyncio.CancelledError:
-                logger.info(f"Download cancelled for user {user_id}")
-                await message.reply_text("Task cancelled.")
-                return
-            except ChatAdminRequired:
-                logger.error(f"ChatAdminRequired during download")
-                await message.reply_text("Error: Bot lacks admin rights.")
-                await send_log(client, message.from_user, f"Download failed: Bot lacks admin rights")
-                return
-            except Exception as e:
-                logger.error(f"Download error for user {user_id}: {e}")
-                await message.reply_text(f"Error downloading: {e}")
-                await send_log(client, message.from_user, f"Download error: {str(e)}")
-                return
+            file_path = await download_task
 
             renamed_file_path = f"downloads/{new_name}"
-            logger.info(f"Renaming to {renamed_file_path}")
             os.makedirs("downloads", exist_ok=True)
             os.rename(file_path, renamed_file_path)
 
-            logger.info(f"Uploading {new_name} for user {user_id}")
             if not os.path.exists(renamed_file_path):
                 logger.error(f"Upload failed: File {renamed_file_path} does not exist")
                 await message.reply_text(f"Upload failed: File {new_name} not found")
                 await send_log(client, message.from_user, f"Upload failed: File {renamed_file_path} missing")
                 return
-            
+
             upload_task = asyncio.create_task(client.send_document(
                 chat_id=message.chat.id,
                 document=renamed_file_path,
                 file_name=new_name
             ))
             user_tasks[user_id].append(upload_task)
-            try:
-                await upload_task
-                await codeflixbots.add_upload(user_id, new_name)
-            except asyncio.CancelledError:
-                logger.info(f"Upload cancelled for user {user_id}")
-                await message.reply_text("Task cancelled.")
-                return
-            except ChatAdminRequired:
-                logger.error(f"ChatAdminRequired during upload")
-                await message.reply_text("Error: Bot lacks admin rights.")
-                await send_log(client, message.from_user, f"Upload failed: Bot lacks admin rights")
-                return
-            except Exception as e:
-                logger.error(f"Upload error for user {user_id}: {e}")
-                await message.reply_text(f"Error uploading: {e}")
-                await send_log(client, message.from_user, f"Upload error: {str(e)}")
-                return
+            await upload_task
+            await codeflixbots.add_upload(user_id, new_name)
 
-            logger.info(f"Sending {new_name} to dump
+            caption = f"{new_name} {telegram_handle or ''}"
+            await codeflixbots.send_to_dump_channel(client, renamed_file_path, caption)
+
+            await codeflixbots.delete_user_choice(user_id)
+
+        except Exception as e:
+            logger.error(f"Processing error for user {user_id}: {e}")
+            await message.reply_text(f"Error: {str(e)}")
+            await send_log(client, message.from_user, f"Processing error: {str(e)}")
+        finally:
+            await cleanup_files(file_path, renamed_file_path)
+            user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
+
+    else:
+        await message.reply_text("Use /extraction to set a rename mode or /settings for more options.")
+
+@Client.on_message(filters.private & (filters.document | filters.video | filters.audio))
+async def auto_rename_files(client, message):
+    user_id = message.from_user.id
+    media = message.document or message.video or message.audio
+    file_name = media.file_name or "unknown"
+
+    try:
+        logger.info(f"Processing file for user {user_id}: {file_name}")
+        await send_log(client, message.from_user, f"Processing file: {file_name}")
+        await process_file(client, message)
+    except Exception as e:
+        logger.error(f"Error processing file for user {user_id}: {e}")
+        await message.reply_text("Error: Couldn't process file.")
+        await send_log(client, message.from_user, f"Processing error: {str(e)}")
