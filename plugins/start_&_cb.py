@@ -253,111 +253,88 @@ async def help_command(client, message):
     )
 
 ### /extraction 
-
 @Client.on_message(filters.command("extraction") & filters.private)
 async def extraction_command(client: Client, message: Message) -> None:
     keyboard: List[List[InlineKeyboardButton]] = [
         [InlineKeyboardButton("Filename", callback_data="filename")],
         [InlineKeyboardButton("Filecaption", callback_data="filecaption")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
     await message.reply_text(
         "Choose how you want to rename the file:",
-        reply_markup=reply_markup
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 @Client.on_callback_query()
 async def handle_callback(client: Client, callback_query: CallbackQuery) -> None:
     try:
         choice: str = callback_query.data
-        if not choice:
-            logging.error(f"No callback data for user {callback_query.from_user.id}")
-            await callback_query.message.reply_text("Error: No option selected.")
+        if not choice or choice not in ["filename", "filecaption"]:
+            logging.error(f"Invalid/no callback data for user {callback_query.from_user.id}: {choice}")
+            await callback_query.message.reply_text("Error: Invalid option.")
             await callback_query.answer("Invalid selection!")
             return
 
-        if choice not in ["filename", "filecaption"]:
-            logging.error(f"Invalid callback data '{choice}' for user {callback_query.from_user.id}")
-            await callback_query.message.reply_text("Error: Invalid option selected.")
-            await callback_query.answer("Unknown option!")
-            return
-
         user_id: int = callback_query.from_user.id
-        logging.info(f"Processing callback '{choice}' for user {user_id}")
+        logging.info(f"Callback '{choice}' for user {user_id}")
 
-        # Check reply_markup
         if not callback_query.message.reply_markup or not hasattr(callback_query.message.reply_markup, 'inline_keyboard'):
-            logging.error(f"No inline keyboard found for user {user_id}")
-            await callback_query.message.reply_text("Error: Button markup is missing.")
+            logging.error(f"No keyboard for user {user_id}")
+            await callback_query.message.reply_text("Error: Buttons missing.")
             await callback_query.answer("Keyboard error!")
             return
 
-        # Update keyboard with checkmark
-        original_keyboard: List[List[InlineKeyboardButton]] = callback_query.message.reply_markup.inline_keyboard
-        updated_keyboard: List[List[InlineKeyboardButton]] = []
-        button_found = False
-        for row in original_keyboard:
-            updated_row: List[InlineKeyboardButton] = []
-            for button in row:
-                if button.callback_data == choice:
-                    button_found = True
-                    updated_row.append(InlineKeyboardButton(f"{button.text.rstrip(' ✅')} ✅", callback_data=button.callback_data))
-                else:
-                    updated_row.append(InlineKeyboardButton(button.text.rstrip(' ✅'), callback_data=button.callback_data))
-            updated_keyboard.append(updated_row)
+        updated_keyboard = [
+            [InlineKeyboardButton("Filename ✅" if choice == "filename" else "Filename", callback_data="filename")],
+            [InlineKeyboardButton("Filecaption ✅" if choice == "filecaption" else "Filecaption", callback_data="filecaption")]
+        ]
+        logging.info(f"Keyboard for user {user_id}: {[[b.text for b in r] for r in updated_keyboard]}")
 
-        if not button_found:
-            logging.error(f"Button with callback '{choice}' not found for user {user_id}")
-            await callback_query.message.reply_text("Error: Button not found.")
-            await callback_query.answer("Button error!")
-            return
-
-        logging.info(f"New keyboard for user {user_id}: {[[button.text for button in row] for row in updated_keyboard]}")
-
-        # Try editing keyboard with retry
         for attempt in range(3):
             try:
-                await callback_query.message.edit_reply_markup(
-                    reply_markup=InlineKeyboardMarkup(updated_keyboard)
-                )
-                logging.info(f"Keyboard updated successfully for user {user_id}")
+                await callback_query.message.edit_reply_markup(InlineKeyboardMarkup(updated_keyboard))
+                logging.info(f"Keyboard updated for user {user_id}")
                 break
             except MessageNotModified:
                 logging.warning(f"Keyboard unchanged for user {user_id}, attempt {attempt+1}")
                 break
+            except ChatAdminRequired as e:
+                logging.error(f"ChatAdminRequired for keyboard update, user {user_id}: {e}")
+                await callback_query.message.reply_text("Error: Bot lacks admin rights.")
+                await callback_query.answer("Admin error!")
+                return
             except Exception as e:
-                logging.error(f"Keyboard update failed for user {user_id}, attempt {attempt+1}: {str(e)}")
+                logging.error(f"Keyboard update failed for user {user_id}, attempt {attempt+1}: {e}")
                 if attempt == 2:
-                    await callback_query.message.reply_text(f"Error updating buttons: {str(e)}")
-                    await callback_query.answer("Failed to update buttons!")
+                    await callback_query.message.reply_text("Error: Couldn't update buttons.")
+                    await callback_query.answer("Update failed!")
                     return
-                await asyncio.sleep(1)  # Wait before retry
+                await asyncio.sleep(1)
 
-        # Save choice to database
-        if choice == "filename":
-            success = await db.set_user_choice(user_id, "filename")
+        try:
+            success = await db.set_user_choice(user_id, choice)
             if not success:
-                logging.error(f"Failed to save filename choice for user {user_id}")
-                await callback_query.message.reply_text("Error: Failed to save your choice.")
+                logging.error(f"Failed to save choice '{choice}' for user {user_id}")
+                await callback_query.message.reply_text("Error: Couldn't save choice.")
                 await callback_query.answer("Database error!")
                 return
-            await callback_query.message.reply_text("Please send the file, and I'll rename it using its filename.")
-
-        elif choice == "filecaption":
-            success = await db.set_user_choice(user_id, "filecaption")
-            if not success:
-                logging.error(f"Failed to save filecaption choice for user {user_id}")
-                await callback_query.message.reply_text("Error: Failed to save your choice.")
-                await callback_query.answer("Database error!")
-                return
-            await callback_query.message.reply_text("Please send the file, and I'll rename it using its caption.")
+            await callback_query.message.reply_text(
+                f"Please send the file, and I'll rename it using its {choice}."
+            )
+        except ChatAdminRequired as e:
+            logging.error(f"ChatAdminRequired for db save, user {user_id}: {e}")
+            await callback_query.message.reply_text("Error: Bot lacks admin rights.")
+            await callback_query.answer("Admin error!")
+            return
 
         await callback_query.answer("Option selected!")
+    except ChatAdminRequired as e:
+        logging.error(f"ChatAdminRequired in callback for user {callback_query.from_user.id}: {e}")
+        await callback_query.message.reply_text("Error: Bot lacks admin rights.")
+        await callback_query.answer("Admin error!")
     except Exception as e:
-        logging.error(f"Callback error for user {callback_query.from_user.id}: {str(e)}")
-        await callback_query.message.reply_text(f"Error: {str(e)}")
-        await callback_query.answer("Something went wrong!")
+        logging.error(f"Callback error for user {callback_query.from_user.id}: {e}")
+        await callback_query.message.reply_text("Error: Something went wrong.")
+        await callback_query.answer("Error!")
 
 @Client.on_message(filters.document & filters.private)
 async def handle_file(client: Client, message: Message) -> None:
@@ -365,61 +342,73 @@ async def handle_file(client: Client, message: Message) -> None:
     rename_mode: Optional[str] = await db.get_user_choice(user_id)
 
     if not rename_mode:
-        await message.reply_text("Please use /extraction first to choose a rename mode.")
+        await message.reply_text("Use /extraction to choose a rename mode.")
         return
 
     file = message.document
     new_name: str = ""
 
     try:
-        logging.info(f"Processing file for user {user_id} with rename_mode {rename_mode}")
+        logging.info(f"Processing file for user {user_id}, mode {rename_mode}")
         if rename_mode == "filename":
             new_name = file.file_name or f"unnamed_{user_id}.bin"
-            await message.reply_text(f"Renaming file using filename: {new_name}")
+            await message.reply_text(f"Renaming using filename: {new_name}")
 
         elif rename_mode == "filecaption":
             caption: Optional[str] = message.caption
             if caption:
                 extension: str = file.file_name.split('.')[-1] if '.' in file.file_name else 'bin'
                 new_name = f"{caption}.{extension}"
-                await message.reply_text(f"Renaming file using caption: {new_name}")
+                await message.reply_text(f"Renaming using caption: {new_name}")
             else:
                 new_name = file.file_name or f"unnamed_{user_id}.bin"
-                await message.reply_text("No caption provided, using filename instead.")
+                await message.reply_text("No caption, using filename: {new_name}")
 
-        logging.info(f"Downloading file {file.file_name} for user {user_id}")
+        logging.info(f"Downloading {file.file_name} for user {user_id}")
         try:
             file_path: str = await client.download_media(file)
+        except ChatAdminRequired as e:
+            logging.error(f"ChatAdminRequired during download for user {user_id}: {e}")
+            await message.reply_text("Error: Bot lacks admin rights.")
+            return
         except Exception as e:
-            logging.error(f"Download error for user {user_id}: {str(e)}")
-            await message.reply_text(f"Error downloading file: {str(e)}")
+            logging.error(f"Download error for user {user_id}: {e}")
+            await message.reply_text(f"Error downloading: {e}")
             return
 
         renamed_file_path: str = f"downloads/{new_name}"
-        logging.info(f"Renaming file to {renamed_file_path}")
-
+        logging.info(f"Renaming to {renamed_file_path}")
         os.makedirs("downloads", exist_ok=True)
         os.rename(file_path, renamed_file_path)
 
-        logging.info(f"Uploading renamed file {new_name} for user {user_id}")
+        logging.info(f"Uploading {new_name} for user {user_id}")
         try:
             await client.send_document(
                 chat_id=message.chat.id,
                 document=renamed_file_path,
                 file_name=new_name
             )
+        except ChatAdminRequired as e:
+            logging.error(f"ChatAdminRequired during upload for user {user_id}: {e}")
+            await message.reply_text("Error: Bot lacks admin rights.")
+            return
         except Exception as e:
-            logging.error(f"Upload error for user {user_id}: {str(e)}")
-            await message.reply_text(f"Error uploading file: {str(e)}")
+            logging.error(f"Upload error for user {user_id}: {e}")
+            await message.reply_text(f"Error uploading: {e}")
             return
 
         os.remove(renamed_file_path)
         await db.delete_user_choice(user_id)
-        logging.info(f"File processed and choice deleted for user {user_id}")
+        logging.info(f"File processed, choice deleted for user {user_id}")
 
+    except ChatAdminRequired as e:
+        logging.error(f"ChatAdminRequired in file processing for user {user_id}: {e}")
+        await message.reply_text("Error: Bot lacks admin rights.")
     except Exception as e:
-        logging.error(f"Processing error for user {user_id}: {str(e)}")
+        logging.error(f"Processing error for user {user_id}: {e}")
         if "ffmpeg" in str(e).lower():
-            await message.reply_text("Error: FFmpeg is not installed. Please contact the bot admin. @i_killed_my_clan")
+            await message.reply_text("Error: FFmpeg not installed. Contact admin.")
         else:
-            await message.reply_text(f"Error while processing file: {str(e)}")
+            await message.reply_text(f"Error processing file: {e}")
+
+                
