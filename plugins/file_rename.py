@@ -76,7 +76,6 @@ def extract_metadata(input_text, rename_mode=None):
     if title:
         title = re.sub(r'\s+', ' ', title).strip()
     
-    # If rename_mode is set, try extracting from it
     if rename_mode:
         for pattern, (key1, key2) in METADATA_PATTERNS:
             match = pattern.search(rename_mode)
@@ -97,7 +96,6 @@ def extract_metadata(input_text, rename_mode=None):
                     episode = match.group(1).zfill(2)
                     return None, None, "01", episode, title
 
-    # Fallback to input_text (filename/caption)
     for pattern, (key1, key2) in METADATA_PATTERNS:
         match = pattern.search(input_text)
         if match:
@@ -275,7 +273,7 @@ async def process_file(client, message):
     file_id = (message.document or message.video or message.audio).file_id
 
     if user_id not in user_semaphores:
-        user_semaphores[user_id] = asyncio.Semaphore(2)
+        user_semaphores[user_id] = asyncio.Semaphore(10)  # Increased for parallel processing
     if user_id not in user_tasks:
         user_tasks[user_id] = []
     if user_id not in user_renaming_operations:
@@ -378,8 +376,8 @@ async def process_file(client, message):
                     full_filename = f"{new_filename}{target_ext}"
 
                 new_filename = sanitize_filename(full_filename)
-                download_path = f"downloads/{user_id}_{file_id}_{int(time.time())}.tmp"
-                metadata_path = f"metadata/{user_id}_{new_filename}_{int(time.time())}.tmp"
+                download_path = f"downloads/{user_id}_{file_id}_{int(time.time())}{target_ext}"
+                metadata_path = f"metadata/{user_id}_{new_filename}_{int(time.time())}{target_ext}"
 
                 os.makedirs(os.path.dirname(download_path), exist_ok=True)
                 os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
@@ -387,28 +385,26 @@ async def process_file(client, message):
                 msg = await message.reply_text("**Downloading...**")
                 start_time = time.time()
 
-                async def download_and_process():
+                async def process_single_file():
+                    nonlocal download_path, metadata_path, thumb_path
                     try:
+                        # Download with proper filename
                         file_path = await client.download_media(
                             message,
                             file_name=download_path,
                             progress=progress_for_pyrogram,
                             progress_args=("Downloading...", msg, time.time())
                         )
-                        return file_path
-                    except Exception as e:
-                        raise e
+                        if not file_path or not os.path.exists(file_path):
+                            logger.error(f"Download failed for {new_filename}")
+                            await msg.edit("Error: Download failed.")
+                            return
 
-                async def upload_file(file_path):
-                    try:
+                        # Process metadata
                         metadata_enabled = await codeflixbots.get_metadata(user_id) == "On"
                         if metadata_enabled:
                             await msg.edit("**Processing metadata...**")
                             try:
-                                if not os.path.exists(file_path):
-                                    logger.error(f"Input file {file_path} does not exist for metadata")
-                                    await msg.edit("Error: Input file not found, skipping metadata")
-                                    return
                                 if await add_metadata(file_path, metadata_path, user_id):
                                     if os.path.exists(metadata_path):
                                         file_path = metadata_path
@@ -421,6 +417,7 @@ async def process_file(client, message):
                                 logger.error(f"Metadata processing failed for user {user_id}: {e}")
                                 await msg.edit(f"Metadata processing failed, proceeding without metadata: {e}")
 
+                        # Prepare thumbnail
                         await msg.edit("**Preparing upload...**")
                         caption = await codeflixbots.get_caption(user_id) or f"**{new_filename}**"
                         thumb = await codeflixbots.get_thumbnail(user_id)
@@ -433,75 +430,62 @@ async def process_file(client, message):
                         
                         thumb_path = await process_thumbnail(thumb_path)
 
+                        # Upload with proper filename
                         await msg.edit("**Uploading...**")
-                        if not os.path.exists(file_path):
-                            logger.error(f"Upload failed: File {file_path} does not exist")
-                            await msg.edit(f"Upload failed: File {new_filename} not found")
-                            return
-
                         sent_message = await client.send_document(
                             chat_id=message.chat.id,
                             document=file_path,
+                            file_name=new_filename,  # Set proper filename
                             caption=caption,
                             thumb=thumb_path,
                             progress=progress_for_pyrogram,
                             progress_args=("Uploading...", msg, time.time())
                         )
                         await msg.delete()
-                        return sent_message
+                        if sent_message:
+                            asyncio.create_task(send_to_dump_channel(client, sent_message, user_id))
                     except Exception as e:
-                        raise e
+                        logger.error(f"Processing failed for user {user_id}: {e}")
+                        await msg.edit(f"Processing failed, using default filename...")
+                        default_filename = f"Unknown_Title_S01E15_720P_{custom_suffix}{target_ext}"
+                        default_filename = sanitize_filename(default_filename)
+                        default_path = f"downloads/{user_id}_default_{int(time.time())}{target_ext}"
+                        
+                        try:
+                            file_path = await client.download_media(
+                                message,
+                                file_name=default_path
+                            )
+                            if file_path and os.path.exists(file_path):
+                                sent_message = await client.send_document(
+                                    chat_id=message.chat.id,
+                                    document=file_path,
+                                    file_name=default_filename,
+                                    caption=f"**{default_filename}**",
+                                    thumb=await process_thumbnail(thumb_path)
+                                )
+                                await msg.delete()
+                                if sent_message:
+                                    asyncio.create_task(send_to_dump_channel(client, sent_message, user_id))
+                            else:
+                                await msg.edit("Error: File not found.")
+                        except Exception as download_error:
+                            logger.error(f"Download failed for user {user_id}: {download_error}")
+                            await msg.edit("Error: Unable to process file.")
+                    finally:
+                        await cleanup_files(download_path, metadata_path, thumb_path)
 
-                download_task = asyncio.create_task(download_and_process())
-                user_tasks[user_id].append(download_task)
-
-                try:
-                    file_path = await download_task
-                    if file_path:
-                        upload_task = asyncio.create_task(upload_file(file_path))
-                        user_tasks[user_id].append(upload_task)
-                        sent_message = await upload_task
-                        if sent_message:
-                            asyncio.create_task(send_to_dump_channel(client, sent_message, user_id))
-                except asyncio.CancelledError:
-                    logger.info(f"Task cancelled for user {user_id}")
-                    await msg.edit("Task cancelled.")
-                    return
-                except ChatAdminRequired:
-                    logger.error(f"ChatAdminRequired during processing")
-                    await msg.edit("Error: Bot lacks admin rights.")
-                    await send_log(client, message.from_user, f"Processing failed: Bot lacks admin rights")
-                    return
-                except Exception as e:
-                    logger.error(f"Processing failed for user {user_id}: {e}")
-                    await msg.edit(f"Processing failed, using default filename...")
-                    new_filename = f"Unknown_Title_S01E15_720P_{custom_suffix}{original_ext}"
-                    new_filename = sanitize_filename(new_filename)
-                    metadata_path = f"metadata/{user_id}_default_{int(time.time())}.tmp"
-                    os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
-
-                    file_path = download_path
-                    if os.path.exists(file_path):
-                        sent_message = await client.send_document(
-                            chat_id=message.chat.id,
-                            document=file_path,
-                            caption=f"**{new_filename}**",
-                            thumb=await process_thumbnail(thumb_path)
-                        )
-                        await msg.delete()
-                        if sent_message:
-                            asyncio.create_task(send_to_dump_channel(client, sent_message, user_id))
-                    else:
-                        await msg.edit("Error: File not found.")
-                    return
+                # Start processing as a separate task
+                task = asyncio.create_task(process_single_file())
+                user_tasks[user_id].append(task)
 
             except Exception as e:
                 logger.error(f"Processing error for user {user_id}: {e}")
                 await message.reply_text(f"Error: {str(e)}, using default filename...")
-                new_filename = f"Unknown_Title_S01E15_720P_{custom_suffix}{original_ext}"
-                new_filename = sanitize_filename(new_filename)
-                download_path = f"downloads/{user_id}_{file_id}_{int(time.time())}.tmp"
-                metadata_path = f"metadata/{user_id}_default_{int(time.time())}.tmp"
+                default_filename = f"Unknown_Title_S01E15_720P_{custom_suffix}{original_ext}"
+                default_filename = sanitize_filename(default_filename)
+                download_path = f"downloads/{user_id}_{file_id}_{int(time.time())}{original_ext}"
+                metadata_path = f"metadata/{user_id}_default_{int(time.time())}{original_ext}"
 
                 try:
                     file_path = await client.download_media(
@@ -512,17 +496,20 @@ async def process_file(client, message):
                         sent_message = await client.send_document(
                             chat_id=message.chat.id,
                             document=file_path,
-                            caption=f"**{new_filename}**",
+                            file_name=default_filename,
+                            caption=f"**{default_filename}**",
                             thumb=await process_thumbnail(thumb_path)
                         )
                         if sent_message:
                             asyncio.create_task(send_to_dump_channel(client, sent_message, user_id))
+                    else:
+                        await message.reply_text("Error: File not found.")
                 except Exception as download_error:
                     logger.error(f"Download failed for user {user_id}: {download_error}")
                     await message.reply_text("Error: Unable to process file.")
-                return
+                finally:
+                    await cleanup_files(download_path, metadata_path, thumb_path)
 
         finally:
             user_renaming_operations[user_id].discard(file_id)
-            await cleanup_files(download_path, metadata_path, thumb_path)
             user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
