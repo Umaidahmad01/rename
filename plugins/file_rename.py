@@ -46,7 +46,7 @@ QUALITY_PATTERNS = [
 ]
 
 renaming_operations = {}
-download_semaphore = asyncio.Semaphore(5)  # Max 5 concurrent downloads
+download_semaphore = asyncio.Semaphore(3)  # Max 3 concurrent downloads
 
 def extract_metadata(input_text, rename_mode=None):
     if not input_text:
@@ -250,20 +250,21 @@ async def convert_file(input_path, output_path, target_ext):
         await asyncio.sleep(2)
     return False
 
-async def send_to_dump_channel(client, message, user_id):
+async def send_to_dump_channel(client, message, user_id, file_name):
     for attempt in range(5):
         try:
             sent_message = await client.send_document(
                 chat_id=Config.DUMP_CHANNEL,
                 document=message.document.file_id,
-                caption=f"From user {user_id}",
+                caption=f"From user {user_id}: {file_name}",
                 disable_notification=True
             )
             logger.info(f"Sent file to dump channel for user {user_id} (attempt {attempt + 1})")
             return sent_message
         except FloodWait as fw:
-            logger.warning(f"FloodWait in dump channel send, waiting {fw.value}s")
-            await asyncio.sleep(min(fw.value, 60))
+            wait_time = min(fw.value, 30)
+            logger.warning(f"FloodWait in dump channel send, waiting {wait_time}s")
+            await asyncio.sleep(wait_time)
         except ChatAdminRequired:
             logger.error(f"ChatAdminRequired in dump channel for user {user_id}")
             return None
@@ -271,32 +272,6 @@ async def send_to_dump_channel(client, message, user_id):
             logger.error(f"Dump channel send failed (attempt {attempt + 1}): {e}")
         await asyncio.sleep(2)
     return None
-
-@Client.on_message(filters.command("setsuffix") & filters.private)
-async def set_suffix(client, message):
-    user_id = message.from_user.id
-    if len(message.command) < 2:
-        return await message.reply_text("Please provide a suffix, e.g., /setsuffix Finished_Society")
-    suffix = message.command[1]
-    try:
-        await codeflixbots.set_custom_suffix(user_id, suffix)
-        await message.reply_text(f"Suffix set to: {suffix} ✅")
-    except Exception as e:
-        logger.error(f"Error setting suffix for user {user_id}: {e}")
-        await message.reply_text("Error setting suffix. Try again later.")
-
-@Client.on_message(filters.command("settemplate") & filters.private)
-async def set_template(client, message):
-    user_id = message.from_user.id
-    if len(message.command) < 2:
-        return await message.reply_text("Please provide a template, e.g., /settemplate [AS] [Vol{volume}-Ch{chapter}] {title} [{quality}] @{suffix}.mkv")
-    template = " ".join(message.command[1:])
-    try:
-        await codeflixbots.set_format_template(user_id, template)
-        await message.reply_text(f"Template set to: {template} ✅")
-    except Exception as e:
-        logger.error(f"Error setting template for user {user_id}: {e}")
-        await message.reply_text("Error setting template. Try again later.")
 
 @Client.on_message((filters.document | filters.video | filters.audio) & filters.private)
 async def process_file(client, message):
@@ -311,7 +286,7 @@ async def process_file(client, message):
                 logger.info(f"Success in {description} for user {user_id}, file {file_id}")
                 return result
             except FloodWait as fw:
-                wait_time = min(fw.value, 60)
+                wait_time = min(fw.value, 30)
                 logger.warning(f"FloodWait in {description} for user {user_id}, file {file_id}, waiting {wait_time}s")
                 await asyncio.sleep(wait_time)
                 backoff = min(backoff * 2, 8)
@@ -455,7 +430,6 @@ async def process_file(client, message):
                 return
 
             async with download_semaphore:
-                await asyncio.sleep(0.1 * (user_id % 5))  # Stagger by user
                 file_path = await attempt_operation(
                     lambda: client.download_media(
                         message,
@@ -528,6 +502,11 @@ async def process_file(client, message):
                 'progress_args': ("Uploading...", msg, time.time())
             }
 
+            if not os.path.exists(file_path):
+                logger.error(f"File {file_path} does not exist for upload")
+                await msg.edit("Error: File not found for upload.")
+                return
+
             if media_type == "document" or target_ext not in ('.mp4', '.mkv', '.mp3'):
                 sent_message = await attempt_operation(
                     lambda: client.send_document(document=file_path, **upload_params),
@@ -546,8 +525,8 @@ async def process_file(client, message):
 
             if sent_message:
                 await msg.delete()
-                await send_to_dump_channel(client, sent_message, user_id)
-                logger.info(f"Completed processing for user {user_id}, file {file_id}")
+                await send_to_dump_channel(client, sent_message, user_id, full_filename)
+                logger.info(f"Completed processing for user {user_id}, file {file_id}, name: {full_filename}")
             else:
                 await msg.edit("Error: Upload failed.")
         except Exception as e:
@@ -560,5 +539,5 @@ async def process_file(client, message):
             await cleanup_files(download_path, metadata_path, convert_path, thumb_path)
             renaming_operations.pop(file_id, None)
 
-    # Run processing with semaphore
+    # Run processing
     asyncio.create_task(run_processing())
