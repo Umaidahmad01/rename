@@ -48,14 +48,14 @@ QUALITY_PATTERNS = [
     (re.compile(r'\[(\d{3,4}[pi])\]', re.IGNORECASE), lambda m: m.group(1).upper())
 ]
 
-def sanitize_filename(filename, keep_extension=True, max_length=255):
+def sanitize_filename(filename, keep_extension=True, max_length=200):
     if not filename:
         return "unnamed_file"
     
     name, ext = os.path.splitext(filename) if keep_extension else (filename, "")
     invalid_chars = r'[<>:"/\\|?*\x00-\x1F]'
     clean = re.sub(invalid_chars, '', name)
-    clean = clean.strip()
+    clean = re.sub(r'\s+', '_', clean).strip('_')
     
     result = f"{clean}{ext}"[:max_length]
     result = result.strip('.')
@@ -273,7 +273,7 @@ async def process_file(client, message):
     file_id = (message.document or message.video or message.audio).file_id
 
     if user_id not in user_semaphores:
-        user_semaphores[user_id] = asyncio.Semaphore(10)  # Increased for parallel processing
+        user_semaphores[user_id] = asyncio.Semaphore(10)
     if user_id not in user_tasks:
         user_tasks[user_id] = []
     if user_id not in user_renaming_operations:
@@ -371,13 +371,13 @@ async def process_file(client, message):
 
                 full_filename = f"{new_filename}{target_ext}"
 
-                if len(full_filename) > 255:
+                if len(full_filename) > 200:
                     new_filename = f"Unknown_Title_S01E15_720P_{custom_suffix}"
                     full_filename = f"{new_filename}{target_ext}"
 
                 new_filename = sanitize_filename(full_filename)
-                download_path = f"downloads/{user_id}_{file_id}_{int(time.time())}{target_ext}"
-                metadata_path = f"metadata/{user_id}_{new_filename}_{int(time.time())}{target_ext}"
+                download_path = f"downloads/{new_filename}"
+                metadata_path = f"metadata/{new_filename}"
 
                 os.makedirs(os.path.dirname(download_path), exist_ok=True)
                 os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
@@ -407,6 +407,7 @@ async def process_file(client, message):
                             try:
                                 if await add_metadata(file_path, metadata_path, user_id):
                                     if os.path.exists(metadata_path):
+                                        os.remove(file_path)
                                         file_path = metadata_path
                                         logger.info(f"Using metadata file: {metadata_path}")
                                     else:
@@ -419,7 +420,7 @@ async def process_file(client, message):
 
                         # Prepare thumbnail
                         await msg.edit("**Preparing upload...**")
-                        caption = await codeflixbots.get_caption(user_id) or f"**{new_filename}**"
+                        caption = f"**{new_filename}**"
                         thumb = await codeflixbots.get_thumbnail(user_id)
                         thumb_path = None
 
@@ -435,7 +436,7 @@ async def process_file(client, message):
                         sent_message = await client.send_document(
                             chat_id=message.chat.id,
                             document=file_path,
-                            file_name=new_filename,  # Set proper filename
+                            file_name=new_filename,
                             caption=caption,
                             thumb=thumb_path,
                             progress=progress_for_pyrogram,
@@ -449,7 +450,7 @@ async def process_file(client, message):
                         await msg.edit(f"Processing failed, using default filename...")
                         default_filename = f"Unknown_Title_S01E15_720P_{custom_suffix}{target_ext}"
                         default_filename = sanitize_filename(default_filename)
-                        default_path = f"downloads/{user_id}_default_{int(time.time())}{target_ext}"
+                        default_path = f"downloads/{default_filename}"
                         
                         try:
                             file_path = await client.download_media(
@@ -484,8 +485,8 @@ async def process_file(client, message):
                 await message.reply_text(f"Error: {str(e)}, using default filename...")
                 default_filename = f"Unknown_Title_S01E15_720P_{custom_suffix}{original_ext}"
                 default_filename = sanitize_filename(default_filename)
-                download_path = f"downloads/{user_id}_{file_id}_{int(time.time())}{original_ext}"
-                metadata_path = f"metadata/{user_id}_default_{int(time.time())}{original_ext}"
+                download_path = f"downloads/{default_filename}"
+                metadata_path = f"metadata/{default_filename}"
 
                 try:
                     file_path = await client.download_media(
