@@ -46,6 +46,7 @@ QUALITY_PATTERNS = [
 ]
 
 renaming_operations = {}
+download_semaphore = asyncio.Semaphore(5)  # Max 5 concurrent downloads
 
 def extract_metadata(input_text, rename_mode=None):
     if not input_text:
@@ -262,7 +263,7 @@ async def send_to_dump_channel(client, message, user_id):
             return sent_message
         except FloodWait as fw:
             logger.warning(f"FloodWait in dump channel send, waiting {fw.value}s")
-            await asyncio.sleep(fw.value)
+            await asyncio.sleep(min(fw.value, 60))
         except ChatAdminRequired:
             logger.error(f"ChatAdminRequired in dump channel for user {user_id}")
             return None
@@ -303,16 +304,17 @@ async def process_file(client, message):
     file_id = (message.document or message.video or message.audio).file_id
 
     async def attempt_operation(operation, description, max_retries=5):
-        backoff = 2
+        backoff = 1
         for attempt in range(max_retries):
             try:
                 result = await operation()
                 logger.info(f"Success in {description} for user {user_id}, file {file_id}")
                 return result
             except FloodWait as fw:
-                logger.warning(f"FloodWait in {description} for user {user_id}, file {file_id}, waiting {fw.value}s")
-                await asyncio.sleep(min(fw.value, 60))  # Cap at 60s
-                backoff = min(backoff * 2, 16)
+                wait_time = min(fw.value, 60)
+                logger.warning(f"FloodWait in {description} for user {user_id}, file {file_id}, waiting {wait_time}s")
+                await asyncio.sleep(wait_time)
+                backoff = min(backoff * 2, 8)
             except ChatAdminRequired:
                 logger.error(f"ChatAdminRequired in {description} for user {user_id}, file {file_id}")
                 return None
@@ -321,9 +323,6 @@ async def process_file(client, message):
             await asyncio.sleep(backoff)
         logger.error(f"Failed {description} after {max_retries} attempts for user {user_id}, file {file_id}")
         return None
-
-    # Stagger API calls to reduce throttling
-    await asyncio.sleep(0.01)
 
     if file_id in renaming_operations:
         if (datetime.now() - renaming_operations[file_id]).seconds < 10:
@@ -455,15 +454,17 @@ async def process_file(client, message):
             if not msg:
                 return
 
-            file_path = await attempt_operation(
-                lambda: client.download_media(
-                    message,
-                    file_name=download_path,
-                    progress=progress_for_pyrogram,
-                    progress_args=("Downloading...", msg, time.time())
-                ),
-                "download media"
-            )
+            async with download_semaphore:
+                await asyncio.sleep(0.1 * (user_id % 5))  # Stagger by user
+                file_path = await attempt_operation(
+                    lambda: client.download_media(
+                        message,
+                        file_name=download_path,
+                        progress=progress_for_pyrogram,
+                        progress_args=("Downloading...", msg, time.time())
+                    ),
+                    "download media"
+                )
             if not file_path or not os.path.exists(file_path):
                 logger.error(f"Download failed for {full_filename}")
                 await msg.edit("Error: Download failed.")
@@ -559,14 +560,5 @@ async def process_file(client, message):
             await cleanup_files(download_path, metadata_path, convert_path, thumb_path)
             renaming_operations.pop(file_id, None)
 
-    # Spawn processing as a separate task
+    # Run processing with semaphore
     asyncio.create_task(run_processing())
-
-# Increase Pyrogram concurrency
-client = Client(
-    "my_bot",
-    api_id=Config.API_ID,
-    api_hash=Config.API_HASH,
-    bot_token=Config.BOT_TOKEN,
-    max_concurrent_transmissions=1000  # Allow more simultaneous downloads/uploads
-)
