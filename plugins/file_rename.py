@@ -8,7 +8,7 @@ from pyrogram.errors import FloodWait
 from PIL import Image
 import ffmpeg
 from config import Config
-from database import codeflixbots
+from helper.database import codeflixbots
 
 logging.basicConfig(
     level=logging.INFO,
