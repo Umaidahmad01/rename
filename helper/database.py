@@ -214,7 +214,7 @@ class Database:
         try:
             await obito.col.update_one({'_id': int(user_id)}, {'$set': {'title': title}})
         except Exception as e:
-            logging.error(f"Error setting title for user { медиа_id}: {e}")
+            logging.error(f"Error setting title for user {user_id}: {e}")
 
     async def get_author(obito, user_id):
         try:
