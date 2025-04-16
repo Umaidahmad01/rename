@@ -54,7 +54,6 @@ def sanitize_filename(filename, keep_extension=True, max_length=255):
         return "unnamed_file"
     
     name, ext = os.path.splitext(filename) if keep_extension else (filename, "")
-    # Only remove OS-invalid characters
     invalid_chars = r'[<>:"/\\|?*\x00-\x1F]'
     clean = re.sub(invalid_chars, '', name)
     clean = clean.strip()
@@ -73,7 +72,6 @@ def extract_metadata(input_text, rename_mode):
         return None, None, None, None, None
     input_text = str(input_text)
     
-    # Extract title: Everything before season/episode or quality
     title_match = re.match(r'^(.*?)(?:S\d+|Season|E\d+|Episode|\d{3,4}[pi]|WebRip|BluRay|Hin\s*Eng|DD\s*5\.1|\[|$)', input_text, re.IGNORECASE)
     title = title_match.group(1).strip().replace('.', ' ').title() if title_match else None
     if title:
@@ -283,7 +281,7 @@ async def process_file(client, message):
     else:
         return await message.reply_text("Unsupported file type")
 
-    # Check if media type matches user preference (if set)
+    # Only restrict if media_preference is explicitly set
     if media_preference and media_preference != media_type:
         return await message.reply_text(f"Your media preference is set to '{media_preference}'. Please upload a {media_preference} file or change it with /setmedia.")
 
@@ -318,7 +316,7 @@ async def process_file(client, message):
 
         template_ext_match = re.search(r'\.([a-zA-Z0-9]+)$', new_template)
         template_ext = f".{template_ext_match.group(1)}" if template_ext_match else None
-        original_ext = os.path.splitext(file_name)[1] or ('.mkv' if media_type == "video" else '.mp3')
+        original_ext = os.path.splitext(file_name)[1] or ('.mkv' if media_type == "video" else '.mp3' if media_type == "audio" else '.file')
         target_ext = template_ext if template_ext else original_ext
 
         if template_ext:
