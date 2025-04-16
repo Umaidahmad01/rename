@@ -8,7 +8,6 @@ import logging
 from pyrogram.errors import FloodWait, MessageNotModified, ChatAdminRequired
 import os
 
-
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
@@ -154,28 +153,6 @@ async def extraction_command(client: Client, message: Message) -> None:
 
 # Clear Command Handler
 user_tasks = {}  # Track user tasks globally
-@Client.on_message(filters.command("clear") & filters.private)
-async def clear_tasks(client: Client, message: Message) -> None:
-    user_id = message.from_user.id
-    logging.info(f"Clearing tasks for user {user_id}")
-    try:
-        if user_id in user_tasks:
-            tasks = user_tasks[user_id]
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            user_tasks[user_id] = []
-            logging.info(f"Cleared {len(tasks)} tasks for user {user_id}")
-
-        await db.delete_user_choice(user_id)
-        await message.reply_text("All ongoing tasks and settings cleared!")
-    except ChatAdminRequired:
-        logging.error(f"ChatAdminRequired in clear")
-        await message.reply_text("Error: Bot lacks admin rights.")
-    except Exception as e:
-        logging.error(f"Error clearing tasks for user {user_id}: {e}")
-        await message.reply_text("Error: Couldn't clear tasks.")
-
 # Callback Query Handler (Merged for all commands)
 @Client.on_callback_query()
 async def cb_handler(client, query: CallbackQuery):
@@ -336,335 +313,70 @@ async def cb_handler(client, query: CallbackQuery):
             await query.message.delete()
             await query.message.continue_propagation()
 
-
-@Client.on_message(filters.command("start") & filters.private)
-async def start_command(client: Client, message: Message) -> None:
-    user_id = message.from_user.id
-    try:
-        await message.reply_text(
-            Config.START_MESSAGE.format(
-                first_name=message.from_user.first_name,
-                username=message.from_user.username or "None",
-                mention=message.from_user.mention,
-                id=user_id
-            ),
-            disable_web_page_preview=True
-        )
-        await codeflixbots.add_user(client, message)
-        logger.info(f"Start command by user {user_id}")
-        await send_log(client, message.from_user, "Started bot")
-    except Exception as e:
-        logger.error(f"Error in start_command: {e}")
-        await message.reply_text("Error: Failed to start.")
-        await send_log(client, message.from_user, f"Start error: {str(e)}")
-
-@Client.on_message(filters.command("extraction") & filters.private)
-async def extraction_command(client: Client, message: Message) -> None:
-    try:
-        keyboard = [
-            [InlineKeyboardButton("Filename", callback_data="extract_filename")],
-            [InlineKeyboardButton("Filecaption", callback_data="extract_filecaption")]
-        ]
-        await message.reply_text(
-            "Choose how to rename the file:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        logger.info(f"Sent extraction options to user {message.from_user.id}")
-        await send_log(client, message.from_user, "Started /extraction command")
-    except ChatAdminRequired:
-        logger.error(f"ChatAdminRequired in extraction_command")
-        await message.reply_text("Error: Bot lacks admin rights.")
-        await send_log(client, message.from_user, "Extraction command failed: Bot lacks admin rights")
-    except Exception as e:
-        logger.error(f"Error in extraction_command: {e}")
-        await message.reply_text("Error: Failed to send options.")
-        await send_log(client, message.from_user, f"Extraction command error: {str(e)}")
-
-@Client.on_message(filters.command("settings") & filters.private)
-async def settings_command(client: Client, message: Message) -> None:
-    user_id = message.from_user.id
-    try:
-        metadata_enabled = await codeflixbots.get_metadata(user_id)
-        telegram_handle = await codeflixbots.get_telegram_handle(user_id) or "Not set"
-        upscale_scale = await codeflixbots.get_upscale_scale(user_id)
-        keyboard = [
-            [InlineKeyboardButton(f"Metadata: {'ON' if metadata_enabled else 'OFF'}", callback_data="settings_toggle_metadata")],
-            [InlineKeyboardButton("Set Metadata", callback_data="settings_set_metadata")],
-            [InlineKeyboardButton(f"Telegram Handle: {telegram_handle}", callback_data="settings_set_handle")],
-            [InlineKeyboardButton(f"Upscale Scale: {upscale_scale}", callback_data="settings_set_upscale")],
-            [InlineKeyboardButton("My Commands", callback_data="settings_mycmd"),
-             InlineKeyboardButton("Owner", callback_data="settings_owner")],
-            [InlineKeyboardButton("My Uploads", callback_data="settings_myupload"),
-             InlineKeyboardButton("Help", callback_data="settings_help")],
-            [InlineKeyboardButton("Premium", callback_data="settings_premium")]
-        ]
-        await message.reply_text(
-            "Bot Settings:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        logger.info(f"Sent settings menu to user {user_id}")
-        await send_log(client, message.from_user, "Started /settings command")
-    except ChatAdminRequired:
-        logger.error(f"ChatAdminRequired in settings_command")
-        await message.reply_text("Error: Bot lacks admin rights.")
-        await send_log(client, message.from_user, "Settings command failed: Bot lacks admin rights")
-    except Exception as e:
-        logger.error(f"Error in settings_command: {e}")
-        await message.reply_text("Error: Failed to send settings.")
-        await send_log(client, message.from_user, f"Settings command error: {str(e)}")
-
 @Client.on_message(filters.command("clear") & filters.private)
-async def clear_tasks(client: Client, message: Message) -> None:
+async def clear_tasks(client, message):
     user_id = message.from_user.id
-    from plugins.file_rename import user_tasks
-    logger.info(f"Clearing tasks for user {user_id}")
+    if user_id not in user_tasks or not user_tasks[user_id]:
+        await message.reply_text("No active tasks to clear!")
+        return
+    
     try:
-        if user_id in user_tasks:
-            tasks = user_tasks[user_id]
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            user_tasks[user_id] = []
-            logger.info(f"Cleared {len(tasks)} tasks for user {user_id}")
-
-        await codeflixbots.delete_user_choice(user_id)
-        if user_id in metadata_input:
-            del metadata_input[user_id]
-        if user_id in telegram_handle_input:
-            del telegram_handle_input[user_id]
-        if user_id in upscale_input:
-            del upscale_input[user_id]
-        await message.reply_text("All ongoing tasks and settings cleared!")
-        await send_log(client, message.from_user, "Cleared all tasks and settings")
-    except ChatAdminRequired:
-        logger.error(f"ChatAdminRequired in clear")
-        await message.reply_text("Error: Bot lacks admin rights.")
-        await send_log(client, message.from_user, "Clear command failed: Bot lacks admin rights")
+        for task in user_tasks[user_id]:
+            if not task.done():
+                task.cancel()
+        user_tasks[user_id] = []
+        await message.reply_text("All your tasks have been cleared!")
+        logger.info(f"Cleared all tasks for user {user_id}")
     except Exception as e:
         logger.error(f"Error clearing tasks for user {user_id}: {e}")
-        await message.reply_text("Error: Couldn't clear tasks.")
-        await send_log(client, message.from_user, f"Clear command error: {str(e)}")
+        await message.reply_text(f"Failed to clear tasks: {str(e)}")
 
-@Client.on_message(filters.command("upscale") & filters.private)
-async def upscale_command(client: Client, message: Message) -> None:
+@Client.on_message(filters.command("upscale") & filters.private & filters.photo)
+async def upscale_photo(client, message):
     user_id = message.from_user.id
-    from plugins.file_rename import upscale_video
+    input_path = f"temp/{user_id}_input.jpg"
+    output_path = f"temp/{user_id}_upscaled.jpg"
+    
+    os.makedirs("temp", exist_ok=True)
+    
     try:
-        scale = await codeflixbots.get_upscale_scale(user_id)
-        if message.reply_to_message and (message.reply_to_message.video or message.reply_to_message.document):
-            await upscale_video(client, message.reply_to_message, scale)
-        else:
-            await message.reply_text("Please reply to a video with /upscale.")
-        logger.info(f"Started /upscale for user {user_id}")
-        await send_log(client, message.from_user, "Started /upscale command")
-    except ChatAdminRequired:
-        logger.error(f"ChatAdminRequired in upscale_command")
-        await message.reply_text("Error: Bot lacks admin rights.")
-        await send_log(client, message.from_user, "Upscale command failed: Bot lacks admin rights")
-    except Exception as e:
-        logger.error(f"Error in upscale_command: {e}")
-        await message.reply_text("Error: Failed to process upscale.")
-        await send_log(client, message.from_user, f"Upscale command error: {str(e)}")
-
-@Client.on_message(filters.command("exthum") & filters.private)
-async def exthum_command(client: Client, message: Message) -> None:
-    user_id = message.from_user.id
-    from plugins.file_rename import extract_thumbnail
-    try:
-        timestamp = float(message.text.split()[-1]) if len(message.text.split()) > 1 else 0.0
-        await codeflixbots.set_exthum_timestamp(user_id, timestamp)
-        if message.reply_to_message and (message.reply_to_message.video or message.reply_to_message.document):
-            await extract_thumbnail(client, message.reply_to_message, timestamp)
-        else:
-            await message.reply_text("Please reply to a video with /exthum [timestamp].")
-        logger.info(f"Started /exthum for user {user_id}")
-        await send_log(client, message.from_user, "Started /exthum command")
-    except ValueError:
-        await message.reply_text("Invalid timestamp. Use /exthum [seconds].")
-    except ChatAdminRequired:
-        logger.error(f"ChatAdminRequired in exthum_command")
-        await message.reply_text("Error: Bot lacks admin rights.")
-        await send_log(client, message.from_user, "Exthum command failed: Bot lacks admin rights")
-    except Exception as e:
-        logger.error(f"Error in exthum_command: {e}")
-        await message.reply_text("Error: Failed to process thumbnail.")
-        await send_log(client, message.from_user, f"Exthum command error: {str(e)}")
-
-@Client.on_message(filters.command("setmetadata") & filters.private)
-async def set_metadata_command(client: Client, message: Message) -> None:
-    user_id = message.from_user.id
-    try:
-        keyboard = [
-            [InlineKeyboardButton("Title", callback_data="metadata_title"),
-             InlineKeyboardButton("Artist", callback_data="metadata_artist")],
-            [InlineKeyboardButton("Author", callback_data="metadata_author"),
-             InlineKeyboardButton("Video Title", callback_data="metadata_video")],
-            [InlineKeyboardButton("Audio Title", callback_data="metadata_audio"),
-             InlineKeyboardButton("Subtitle", callback_data="metadata_subtitle")],
-            [InlineKeyboardButton("Back", callback_data="settings_main")]
-        ]
-        await message.reply_text(
-            "Select a metadata field to set:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+        # Download the photo
+        await message.reply_text("Downloading your photo...")
+        await client.download_media(message.photo, file_name=input_path)
+        
+        # Upscale the image
+        await message.reply_text("Upscaling your photo...")
+        img = cv2.imread(input_path)
+        if img is None:
+            raise ValueError("Failed to load image")
+        
+        height, width = img.shape[:2]
+        new_width = int(width * 2)
+        new_height = int(height * 2)
+        upscaled = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+        cv2.imwrite(output_path, upscaled, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+        
+        # Send upscaled photo
+        await message.reply_text("Uploading upscaled photo...")
+        await client.send_photo(
+            chat_id=message.chat.id,
+            photo=output_path,
+            caption="Upscaled photo"
         )
-        logger.info(f"Sent metadata menu to user {user_id}")
-        await send_log(client, message.from_user, "Started /setmetadata command")
-    except ChatAdminRequired:
-        logger.error(f"ChatAdminRequired in setmetadata_command")
-        await message.reply_text("Error: Bot lacks admin rights.")
-        await send_log(client, message.from_user, "Setmetadata command failed: Bot lacks admin rights")
+        logger.info(f"Upscaled photo sent to user {user_id}")
+    
     except Exception as e:
-        logger.error(f"Error in setmetadata_command: {e}")
-        await message.reply_text("Error: Failed to send metadata options.")
-        await send_log(client, message.from_user, f"Setmetadata command error: {str(e)}")
+        logger.error(f"Upscale error for user {user_id}: {e}")
+        await message.reply_text(f"Error upscaling photo: {str(e)}")
+    
+    finally:
+        # Cleanup
+        for path in (input_path, output_path):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception as e:
+                logger.error(f"Error removing {path}: {e}")
 
-@Client.on_callback_query(filters.regex(r"^extract_"))
-async def handle_extraction_callback(client: Client, callback_query: CallbackQuery) -> None:
-    user_id = callback_query.from_user.id
-    choice = callback_query.data
-    logger.info(f"Extraction callback for user {user_id}: '{choice}'")
 
-    try:
-        valid_choices = ["extract_filename", "extract_filecaption"]
-        choice_map = {
-            "extract_filename": "filename",
-            "extract_filecaption": "filecaption"
-        }
-
-        if choice not in valid_choices:
-            logger.error(f"Invalid extraction callback for user {user_id}: '{choice}'")
-            keyboard = [
-                [InlineKeyboardButton("Filename", callback_data="extract_filename")],
-                [InlineKeyboardButton("Filecaption", callback_data="extract_filecaption")]
-            ]
-            await callback_query.message.edit_reply_markup(InlineKeyboardMarkup(keyboard))
-            await callback_query.message.reply_text("Please select a valid option (Filename or Filecaption).")
-            await callback_query.answer("Invalid selection, try again!")
-            await send_log(client, callback_query.from_user, f"Invalid extraction callback: '{choice}'")
-            return
-
-        db_choice = choice_map[choice]
-
-        updated_keyboard = [
-            [InlineKeyboardButton(f"Filename {'✅' if db_choice == 'filename' else ''}", callback_data="extract_filename")],
-            [InlineKeyboardButton(f"Filecaption {'✅' if db_choice == 'filecaption' else ''}", callback_data="extract_filecaption")]
-        ]
-        await callback_query.message.edit_reply_markup(InlineKeyboardMarkup(updated_keyboard))
-        success = await codeflixbots.set_user_choice(user_id, db_choice)
-        if not success:
-            logger.error(f"Failed to save choice '{db_choice}' for user {user_id}")
-            await callback_query.message.reply_text("Error: Couldn't save choice.")
-            await callback_query.answer("Database error!")
-            await send_log(client, callback_query.from_user, f"Failed to save choice: {db_choice}")
-            return
-        await callback_query.message.reply_text(
-            f"Please send the file to rename using its {db_choice}."
-        )
-        await send_log(client, callback_query.from_user, f"Selected rename mode: {db_choice}")
-        await callback_query.answer("Option selected!")
-    except ChatAdminRequired:
-        logger.error(f"ChatAdminRequired in extraction callback")
-        await callback_query.message.reply_text("Error: Bot lacks admin rights.")
-        await callback_query.answer("Admin error!")
-        await send_log(client, callback_query.from_user, "Extraction callback failed: Bot lacks admin rights")
-    except Exception as e:
-        logger.error(f"Extraction callback error for user {user_id}: {e}")
-        await callback_query.message.reply_text("Error: Something went wrong.")
-        await callback_query.answer("Error!")
-        await send_log(client, callback_query.from_user, f"Extraction callback error: {str(e)}")
-
-@Client.on_callback_query(filters.regex(r"^settings_"))
-async def handle_settings_callback(client: Client, callback_query: CallbackQuery) -> None:
-    user_id = callback_query.from_user.id
-    choice = callback_query.data
-    logger.info(f"Settings callback for user {user_id}: '{choice}'")
-
-    try:
-        if choice == "settings_toggle_metadata":
-            current = await codeflixbots.get_metadata(user_id)
-            new_value = not current
-            await codeflixbots.set_metadata(user_id, new_value)
-            await update_settings_keyboard(client, callback_query, new_value)
-            await callback_query.message.reply_text(f"Metadata turned {'ON' if new_value else 'OFF'}")
-            await callback_query.answer("Metadata toggled!")
-            await send_log(client, callback_query.from_user, f"Metadata set to {new_value}")
-
-        elif choice == "settings_set_metadata":
-            await set_metadata_command(client, callback_query.message)
-            await callback_query.answer("Metadata menu opened!")
-
-        elif choice == "settings_set_handle":
-            telegram_handle_input[user_id] = True
-            await callback_query.message.reply_text("Please enter your Telegram handle (e.g., @Animes_sub_society) or send 'none' to remove:")
-            await callback_query.answer("Enter Telegram handle!")
-            await send_log(client, callback_query.from_user, "Prompted for Telegram handle")
-
-        elif choice == "settings_set_upscale":
-            upscale_input[user_id] = True
-            await callback_query.message.reply_text("Please enter upscale scale (e.g., 2:2 for 2x, 4:4 for 4x):")
-            await callback_query.answer("Enter upscale scale!")
-            await send_log(client, callback_query.from_user, "Prompted for upscale scale")
-
-        elif choice == "settings_mycmd":
-            await callback_query.message.reply_text("Your commands: /start, /settings, /setmetadata, /extraction, /upscale, /exthum, /clear")
-            await callback_query.answer("Commands shown!")
-            await send_log(client, callback_query.from_user, "Showed mycmd")
-
-        elif choice == "settings_owner":
-            await callback_query.message.reply_text("Owner: @Codeflix_Bots")
-            await callback_query.answer("Owner info shown!")
-            await send_log(client, callback_query.from_user, "Showed owner")
-
-        elif choice == "settings_myupload":
-            uploads = await codeflixbots.get_uploads(user_id)
-            text = "Your uploads:\n" + "\n".join([f"- {u['file_name']} ({u['date']})" for u in uploads[:5]]) if uploads else "No uploads found."
-            await callback_query.message.reply_text(text)
-            await callback_query.answer("Uploads shown!")
-            await send_log(client, callback_query.from_user, "Showed myupload")
-
-        elif choice == "settings_help":
-            await callback_query.message.reply_text(
-                "Help:\n/settings - Manage bot settings\n/setmetadata - Set metadata\n/extraction - Rename files\n/upscale - Upscale videos\n/exthum - Extract thumbnails\n/clear - Clear tasks\nContact @Codeflix_Bots for support."
-            )
-            await callback_query.answer("Help shown!")
-            await send_log(client, callback_query.from_user, "Showed help")
-
-        elif choice == "settings_premium":
-            await callback_query.message.reply_text("Premium: Upgrade for more features! Contact @Codeflix_Bots.")
-            await callback_query.answer("Premium info shown!")
-            await send_log(client, callback_query.from_user, "Showed premium")
-
-        elif choice == "settings_main":
-            metadata_enabled = await codeflixbots.get_metadata(user_id)
-            await update_settings_keyboard(client, callback_query, metadata_enabled)
-            await callback_query.answer("Back to settings!")
-            await send_log(client, callback_query.from_user, "Returned to settings")
-
-    except ChatAdminRequired:
-        logger.error(f"ChatAdminRequired in settings callback")
-        await callback_query.message.reply_text("Error: Bot lacks admin rights.")
-        await callback_query.answer("Admin error!")
-        await send_log(client, callback_query.from_user, "Settings callback failed: Bot lacks admin rights")
-    except Exception as e:
-        logger.error(f"Settings callback error for user {user_id}: {e}")
-        await callback_query.message.reply_text("Error: Something went wrong.")
-        await callback_query.answer("Error!")
-        await send_log(client, callback_query.from_user, f"Settings callback error: {str(e)}")
-
-async def update_settings_keyboard(client, callback_query, metadata_enabled):
-    user_id = callback_query.from_user.id
-    telegram_handle = await codeflixbots.get_telegram_handle(user_id) or "Not set"
-    upscale_scale = await codeflixbots.get_upscale_scale(user_id)
-    keyboard = [
-        [InlineKeyboardButton(f"Metadata: {'ON' if metadata_enabled else 'OFF'}", callback_data="settings_toggle_metadata")],
-        [InlineKeyboardButton("Set Metadata", callback_data="settings_set_metadata")],
-        [InlineKeyboardButton(f"Telegram Handle: {telegram_handle}", callback_data="settings_set_handle")],
-        [InlineKeyboardButton(f"Upscale Scale: {upscale_scale}", callback_data="settings_set_upscale")],
-        [InlineKeyboardButton("My Commands", callback_data="settings_mycmd"),
-         InlineKeyboardButton("Owner", callback_data="settings_owner")],
-        [InlineKeyboardButton("My Uploads", callback_data="settings_myupload"),
-         InlineKeyboardButton("Help", callback_data="settings_help")],
-        [InlineKeyboardButton("Premium", callback_data="settings_premium")]
-    ]
-    await callback_query.message.edit_reply_markup(InlineKeyboardMarkup(keyboard))
-
+        
