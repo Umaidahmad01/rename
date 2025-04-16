@@ -53,9 +53,9 @@ def sanitize_filename(filename, keep_extension=True, max_length=200):
         return "unnamed_file"
     
     name, ext = os.path.splitext(filename) if keep_extension else (filename, "")
+    # Only remove critical invalid characters
     invalid_chars = r'[<>:"/\\|?*\x00-\x1F]'
     clean = re.sub(invalid_chars, '', name)
-    clean = re.sub(r'\s+', '_', clean).strip('_')
     
     result = f"{clean}{ext}"[:max_length]
     result = result.strip('.')
