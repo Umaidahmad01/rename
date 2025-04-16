@@ -23,10 +23,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 user_tasks = {}
-user_semaphores = {}  # Semaphore for limiting concurrent tasks per user
-user_renaming_operations = {}  # Per-user renaming operations to avoid conflicts
+user_semaphores = {}
+user_renaming_operations = {}
 
-# Refined metadata patterns
 METADATA_PATTERNS = [
     (re.compile(r'S(\d+)(?:E|EP|_|\s)(\d+)', re.IGNORECASE), ('season', 'episode')),
     (re.compile(r'Season\s*(\d+)\s*Episode\s*(\d+)', re.IGNORECASE), ('season', 'episode')),
@@ -40,7 +39,6 @@ METADATA_PATTERNS = [
     (re.compile(r'\b(\d+)\b', re.IGNORECASE), (None, 'episode'))
 ]
 
-# Refined quality patterns
 QUALITY_PATTERNS = [
     (re.compile(r'\b(\d{3,4}[pi])\b', re.IGNORECASE), lambda m: m.group(1).upper()),
     (re.compile(r'\b(4k|2160p)\b', re.IGNORECASE), lambda m: "4K"),
@@ -67,49 +65,71 @@ def sanitize_filename(filename, keep_extension=True, max_length=255):
         result = f"{result}{ext}"
     return result
 
-def extract_metadata(input_text, rename_mode):
+def extract_metadata(input_text, rename_mode=None):
     if not input_text:
-        logger.warning(f"No input text for rename_mode {rename_mode}")
-        return None, None, None, None, None
+        logger.warning("No input text provided")
+        return None, None, "01", "15", "Unknown_Title"
     input_text = str(input_text)
     
     title_match = re.match(r'^(.*?)(?:S\d+|Season|E\d+|Episode|\d{3,4}[pi]|WebRip|BluRay|Hin\s*Eng|DD\s*5\.1|\[|$)', input_text, re.IGNORECASE)
-    title = title_match.group(1).strip().replace('.', ' ').title() if title_match else None
+    title = title_match.group(1).strip().replace('.', ' ').title() if title_match else "Unknown_Title"
     if title:
         title = re.sub(r'\s+', ' ', title).strip()
     
+    # If rename_mode is set, try extracting from it
+    if rename_mode:
+        for pattern, (key1, key2) in METADATA_PATTERNS:
+            match = pattern.search(rename_mode)
+            if match:
+                if key1 == 'volume':
+                    volume = match.group(1).zfill(2)
+                    chapter = match.group(2).zfill(2) if key2 == 'chapter' and len(match.groups()) >= 2 else None
+                    return volume, chapter, "01", "15", title
+                elif key1 == 'season':
+                    season = match.group(1).zfill(2)
+                    episode = match.group(2).zfill(2) if key2 == 'episode' and len(match.groups()) >= 2 else "15"
+                    logger.info(f"Extracted from rename_mode: season: {season}, episode: {episode}, title: {title}")
+                    return None, None, season, episode, title
+                elif key2 == 'chapter':
+                    chapter = match.group(1).zfill(2)
+                    return None, chapter, "01", "15", title
+                elif key2 == 'episode':
+                    episode = match.group(1).zfill(2)
+                    return None, None, "01", episode, title
+
+    # Fallback to input_text (filename/caption)
     for pattern, (key1, key2) in METADATA_PATTERNS:
         match = pattern.search(input_text)
         if match:
             if key1 == 'volume':
                 volume = match.group(1).zfill(2)
                 chapter = match.group(2).zfill(2) if key2 == 'chapter' and len(match.groups()) >= 2 else None
-                return volume, chapter, None, None, title
+                return volume, chapter, "01", "15", title
             elif key1 == 'season':
                 season = match.group(1).zfill(2)
-                episode = match.group(2).zfill(2) if key2 == 'episode' and len(match.groups()) >= 2 else None
-                logger.info(f"Extracted season: {season}, episode: {episode}, title: {title}")
+                episode = match.group(2).zfill(2) if key2 == 'episode' and len(match.groups()) >= 2 else "15"
+                logger.info(f"Extracted from input_text: season: {season}, episode: {episode}, title: {title}")
                 return None, None, season, episode, title
             elif key2 == 'chapter':
                 chapter = match.group(1).zfill(2)
-                return None, chapter, None, None, title
+                return None, chapter, "01", "15", title
             elif key2 == 'episode':
                 episode = match.group(1).zfill(2)
-                return None, None, None, episode, title
-    logger.warning(f"No metadata matched for {rename_mode}: {input_text}")
-    return None, None, None, None, title
+                return None, None, "01", episode, title
+    logger.warning(f"No metadata matched: {input_text}")
+    return None, None, "01", "15", title
 
-def extract_quality(input_text, rename_mode):
+def extract_quality(input_text):
     if not input_text:
-        return "UNKNOWN"
+        return "720P"
     for pattern, extractor in QUALITY_PATTERNS:
-        match = pattern.search(input_text, rename_mode)
+        match = pattern.search(input_text)
         if match:
             quality = extractor(match)
             logger.info(f"Extracted quality: {quality}")
             return quality
-    logger.warning(f"No quality matched for {rename_mode}: {input_text}")
-    return "UNKNOWN"
+    logger.warning(f"No quality matched for {input_text}")
+    return "720P"
 
 async def cleanup_files(*paths):
     for path in paths:
@@ -254,30 +274,28 @@ async def process_file(client, message):
     user_id = message.from_user.id
     file_id = (message.document or message.video or message.audio).file_id
 
-    # Initialize user-specific structures
     if user_id not in user_semaphores:
-        user_semaphores[user_id] = asyncio.Semaphore(2)  # Allow 2 concurrent tasks per user
+        user_semaphores[user_id] = asyncio.Semaphore(2)
     if user_id not in user_tasks:
         user_tasks[user_id] = []
     if user_id not in user_renaming_operations:
         user_renaming_operations[user_id] = set()
 
-    # Check if file is already being processed by this user
     if file_id in user_renaming_operations[user_id]:
         logger.info(f"File {file_id} already being processed for user {user_id}, skipping")
         return
 
     async with user_semaphores[user_id]:
         user_renaming_operations[user_id].add(file_id)
+        download_path = None
+        metadata_path = None
+        thumb_path = None
+
         try:
             format_template = await codeflixbots.get_format_template(user_id)
             rename_mode = await codeflixbots.get_user_choice(user_id)
             custom_suffix = await codeflixbots.get_custom_suffix(user_id) or "Finished_Society"
             media_preference = await codeflixbots.get_media_preference(user_id)
-
-            download_path = None
-            metadata_path = None
-            thumb_path = None
 
             if message.document:
                 file_name = message.document.file_name or "document"
@@ -294,7 +312,6 @@ async def process_file(client, message):
             else:
                 return await message.reply_text("Unsupported file type")
 
-            # Apply restriction only if media_preference is set
             if media_preference and media_preference != media_type:
                 return await message.reply_text(f"Your media preference is set to '{media_preference}'. Please upload a {media_preference} file or change it with /setmedia.")
 
@@ -302,69 +319,67 @@ async def process_file(client, message):
                 return await message.reply_text("NSFW content detected")
 
             try:
-                if not rename_mode:
-                    rename_mode = "filename"
-                    logger.info(f"No rename_mode set for user {user_id}, defaulting to filename")
-
-                input_text = file_name if rename_mode == "filename" else (message.caption or file_name)
+                input_text = message.caption or file_name
                 volume, chapter, season, episode, title = extract_metadata(input_text, rename_mode)
-                quality = extract_quality(file_name)
+                quality = extract_quality(rename_mode or input_text)
 
-                # Check if metadata extraction was successful
-                metadata_valid = title and (season or episode or volume or chapter)
-                if not metadata_valid:
-                    logger.warning(f"Metadata extraction failed for {file_name}, using original name")
-                    new_filename = sanitize_filename(file_name)
-                    full_filename = new_filename
-                    target_ext = os.path.splitext(file_name)[1] or ('.mkv' if media_type == "video" else '.mp3' if media_type == "audio" else '.file')
+                title = title or "Unknown_Title"
+                season = season or "01"
+                episode = episode or "15"
+                quality = quality or "720P"
+
+                if format_template:
+                    new_template = format_template
                 else:
-                    if format_template:
-                        new_template = format_template
-                    else:
-                        new_template = "{title}_S{season}E{episode}_{quality}_{suffix}.mkv"
-                        logger.info(f"No format_template for user {user_id}, using default: {new_template}")
+                    new_template = "{title}_S{season}E{episode}_{quality}_{suffix}{ext}"
+                    logger.info(f"No format_template for user {user_id}, using default: {new_template}")
 
-                    template_ext_match = re.search(r'\.([a-zA-Z0-9]+)$', new_template)
-                    template_ext = f".{template_ext_match.group(1)}" if template_ext_match else None
-                    original_ext = os.path.splitext(file_name)[1] or ('.mkv' if media_type == "video" else '.mp3' if media_type == "audio" else '.file')
-                    target_ext = template_ext if template_ext else original_ext
+                original_ext = os.path.splitext(file_name)[1] or ('.mkv' if media_type == "video" else '.mp3' if media_type == "audio" else '.file')
+                template_ext_match = re.search(r'\.([a-zA-Z0-9]+)$', new_template)
+                template_ext = f".{template_ext_match.group(1)}" if template_ext_match else original_ext
 
-                    if template_ext:
-                        new_template = re.sub(r'\.[a-zA-Z0-9]+$', '', new_template)
+                if '{ext}' in new_template:
+                    new_template = new_template.replace('{ext}', '')
+                    target_ext = original_ext
+                elif template_ext_match:
+                    new_template = re.sub(r'\.[a-zA-Z0-9]+$', '', new_template)
+                    target_ext = template_ext
+                else:
+                    target_ext = original_ext
 
-                    replacements = {
-                        '{volume}': volume or 'UNKNOWN',
-                        '{chapter}': chapter or 'UNKNOWN',
-                        '{season}': season or 'UNKNOWN',
-                        '{episode}': episode or 'UNKNOWN',
-                        '{quality}': quality if quality != "UNKNOWN" else '',
-                        '{title}': title or '',
-                        '{suffix}': custom_suffix,
-                        'Volume': volume or 'UNKNOWN',
-                        'Chapter': chapter or 'UNKNOWN',
-                        'Season': season or 'UNKNOWN',
-                        'Episode': episode or 'UNKNOWN',
-                        'QUALITY': quality if quality != "UNKNOWN" else '',
-                        'TITLE': title or '',
-                        'SUFFIX': custom_suffix
-                    }
+                replacements = {
+                    '{volume}': volume or 'UNKNOWN',
+                    '{chapter}': chapter or 'UNKNOWN',
+                    '{season}': season,
+                    '{episode}': episode,
+                    '{quality}': quality,
+                    '{title}': title,
+                    '{suffix}': custom_suffix,
+                    'Volume': volume or 'UNKNOWN',
+                    'Chapter': chapter or 'UNKNOWN',
+                    'Season': season,
+                    'Episode': episode,
+                    'QUALITY': quality,
+                    'TITLE': title,
+                    'SUFFIX': custom_suffix
+                }
 
-                    new_filename = new_template
-                    for placeholder, value in replacements.items():
-                        new_filename = new_filename.replace(placeholder, str(value))
+                new_filename = new_template
+                for placeholder, value in replacements.items():
+                    new_filename = new_filename.replace(placeholder, str(value))
 
-                    if not new_filename.strip():
-                        new_filename = sanitize_filename(file_name)
-                    
+                if not new_filename.strip():
+                    new_filename = f"Unknown_Title_S01E15_720P_{custom_suffix}"
+
+                full_filename = f"{new_filename}{target_ext}"
+
+                if len(full_filename) > 255:
+                    new_filename = f"Unknown_Title_S01E15_720P_{custom_suffix}"
                     full_filename = f"{new_filename}{target_ext}"
-
-                    if len(full_filename) > 255:
-                        new_filename = sanitize_filename(file_name)
-                        full_filename = new_filename
 
                 new_filename = sanitize_filename(full_filename)
                 download_path = f"downloads/{user_id}_{file_id}_{int(time.time())}.tmp"
-                metadata_path = f"metadata/{user_id}_{new_filename}"
+                metadata_path = f"metadata/{user_id}_{new_filename}_{int(time.time())}.tmp"
 
                 os.makedirs(os.path.dirname(download_path), exist_ok=True)
                 os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
@@ -460,8 +475,7 @@ async def process_file(client, message):
                 except Exception as e:
                     logger.error(f"Processing failed for user {user_id}: {e}")
                     await msg.edit(f"Processing failed, using default filename...")
-                    # Upload with default filename on error
-                    new_filename = f"{filename}{custom_suffix}{original_ext}"
+                    new_filename = f"Unknown_Title_S01E15_720P_{custom_suffix}{original_ext}"
                     new_filename = sanitize_filename(new_filename)
                     metadata_path = f"metadata/{user_id}_default_{int(time.time())}.tmp"
                     os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
@@ -484,7 +498,6 @@ async def process_file(client, message):
             except Exception as e:
                 logger.error(f"Processing error for user {user_id}: {e}")
                 await message.reply_text(f"Error: {str(e)}, using default filename...")
-                # Upload with default filename on outer error
                 new_filename = f"Unknown_Title_S01E15_720P_{custom_suffix}{original_ext}"
                 new_filename = sanitize_filename(new_filename)
                 download_path = f"downloads/{user_id}_{file_id}_{int(time.time())}.tmp"
@@ -513,4 +526,3 @@ async def process_file(client, message):
             user_renaming_operations[user_id].discard(file_id)
             await cleanup_files(download_path, metadata_path, thumb_path)
             user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
-
