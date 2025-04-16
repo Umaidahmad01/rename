@@ -347,7 +347,7 @@ class Database:
                 {"_id": user_id},
                 {"$push": {"uploads": {"file_name": file_name, "date": datetime.datetime.utcnow()}}}
             )
-            logging.info(f"Added upload '{file_name}'_pins for user {user_id}")
+            logging.info(f"Added upload '{file_name}' for user {user_id}")
         except Exception as e:
             logging.error(f"Error adding upload for user {user_id}: {e}")
 
