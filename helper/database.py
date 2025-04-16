@@ -347,7 +347,7 @@ class Database:
                 {"_id": user_id},
                 {"$push": {"uploads": {"file_name": file_name, "date": datetime.datetime.utcnow()}}}
             )
-            logging.info(f"Added upload '{file_name}' for user {user_id}")
+            logging.info(f"Added upload '{file_name}'_pins for user {user_id}")
         except Exception as e:
             logging.error(f"Error adding upload for user {user_id}: {e}")
 
@@ -472,12 +472,12 @@ class Database:
         try:
             scale = await obito.get_upscale_scale(user_id)
             if not scale or ":" not in scale:
-                logging.warning(f"Invalid upscale_scale '{scale}' for user {user_id}, using default")
+                logger.warning(f"Invalid upscale_scale '{scale}' for user {user_id}, using default")
                 return 2.0
             factor = float(scale.split(":")[0])
             return max(1.0, min(factor, 5.0))
         except (ValueError, AttributeError, Exception) as e:
-            logging.error(f"Error parsing upscale factor for user {user_id}: {e}")
+            logger.error(f"Error parsing upscale factor for user {user_id}: {e}")
             return 2.0
 
 codeflixbots = Database()
