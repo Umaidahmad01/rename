@@ -427,4 +427,25 @@ async def extract_thumbnail(client, message):
     except Exception as e:
         logger.error(f"Error extracting thumbnail for user {user_id}: {e}")
         await msg.edit(f"Error extracting thumbnail: {str(e)}")
+
+@Client.on_message(filters.command("settemplate") & filters.private)
+async def set_template(client: Client, message: Message):
+    user_id = message.from_user.id
+    if len(message.command) < 2:
+        try:
+            await message.reply_text(
+                "Please provide a template, e.g., /settemplate [AS] [Vol{volume}-Ch{chapter}] {title} [{quality}] @{suffix}.cbz"
+            )
+            logger.info(f"Invalid settemplate command from user {user_id}: No template provided")
+        except Exception as e:
+            logger.error(f"Error replying to settemplate for user {user_id}: {e}")
+        return
+    template = " ".join(message.command[1:])
+    try:
+        await codeflixbots.set_format_template(user_id, template)
+        await message.reply_text(f"Template set to: `{template}` ✅")
+        logger.info(f"Template set for user {user_id}: {template}")
+    except Exception as e:
+        logger.error(f"Error setting template for user {user_id}: {e}")
+        await message.reply_text("Error setting template. Try again later.")
         
