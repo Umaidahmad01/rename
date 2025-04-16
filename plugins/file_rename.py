@@ -147,7 +147,7 @@ async def add_metadata(input_path, output_path, user_id):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     async def run_ffmpeg(cmd):
-        for attempt in range(3):
+        for attempt in range(5):  # Increased retries for stability
             try:
                 process = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -166,7 +166,7 @@ async def add_metadata(input_path, output_path, user_id):
                 logger.error(f"FFmpeg timed out (attempt {attempt + 1})")
             except Exception as e:
                 logger.error(f"FFmpeg failed (attempt {attempt + 1}): {e}")
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)  # Increased delay for Heroku
         return False
 
     try:
@@ -212,7 +212,7 @@ async def add_metadata(input_path, output_path, user_id):
         return False
 
 async def send_to_dump_channel(client, message, user_id):
-    for attempt in range(3):
+    for attempt in range(5):  # Increased retries
         try:
             sent_message = await client.send_document(
                 chat_id=Config.DUMP_CHANNEL,
@@ -226,11 +226,12 @@ async def send_to_dump_channel(client, message, user_id):
             logger.warning(f"FloodWait in dump channel send, waiting {fw.value}s")
             await asyncio.sleep(fw.value)
         except ChatAdminRequired:
-            logger.error(f"ChatAdminRequired in dump channel for user {user_id}")
+            logg
+            er.error(f"ChatAdminRequired in dump channel for user {user_id}")
             return None
         except Exception as e:
             logger.error(f"Dump channel send failed (attempt {attempt + 1}): {e}")
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
     return None
 
 @Client.on_message(filters.command("setsuffix") & filters.private)
@@ -264,7 +265,7 @@ async def process_file(client, message):
     user_id = message.from_user.id
     file_id = (message.document or message.video or message.audio).file_id
 
-    async def attempt_operation(operation, description, max_retries=3):
+    async def attempt_operation(operation, description, max_retries=5):  # Increased retries
         for attempt in range(max_retries):
             try:
                 return await operation()
@@ -276,127 +277,127 @@ async def process_file(client, message):
                 return None
             except Exception as e:
                 logger.error(f"Error in {description} (attempt {attempt + 1}): {e}")
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)  # Increased delay
+        logger.error(f"Failed {description} after {max_retries} attempts")
         return None
 
-    download_path = None
-    metadata_path = None
-    thumb_path = None
+    # Spawn a new coroutine for each file to allow unlimited concurrency
+    async def process_single_file():
+        download_path = None
+        metadata_path = None
+        thumb_path = None
 
-    try:
-        format_template = await attempt_operation(
-            lambda: codeflixbots.get_format_template(user_id),
-            "get format template"
-        )
-        rename_mode = await attempt_operation(
-            lambda: codeflixbots.get_user_choice(user_id),
-            "get user choice"
-        )
-        custom_suffix = await attempt_operation(
-            lambda: codeflixbots.get_custom_suffix(user_id),
-            "get custom suffix"
-        ) or "Finished_Society"
-        media_preference = await attempt_operation(
-            lambda: codeflixbots.get_media_preference(user_id),
-            "get media preference"
-        )
-
-        if message.document:
-            file_name = message.document.file_name or "document"
-            file_size = message.document.file_size
-            media_type = "document"
-        elif message.video:
-            file_name = message.video.file_name or "video"
-            file_size = message.video.file_size
-            media_type = "video"
-        elif message.audio:
-            file_name = message.audio.file_name or "audio"
-            file_size = message.audio.file_size
-            media_type = "audio"
-        else:
-            await message.reply_text("Unsupported file type")
-            return
-
-        if media_preference and media_preference != media_type:
-            await message.reply_text(f"Your media preference is set to '{media_preference}'. Please upload a {media_preference} file or change it with /setmedia.")
-            return
-
-        if await check_anti_nsfw(file_name, message):
-            await message.reply_text("NSFW content detected")
-            return
-
-        input_text = message.caption or file_name
-        volume, chapter, season, episode, title = extract_metadata(input_text, rename_mode)
-        quality = extract_quality(rename_mode or input_text)
-
-        title = title or "Unknown_Title"
-        season = season or "01"
-        episode = episode or "15"
-        quality = quality or "720P"
-
-        if format_template:
-            new_template = format_template
-        else:
-            new_template = "[AS] [S{season}-E{episode}] {title} [{quality} ⌯ Sub] @{suffix}{ext}"
-            logger.info(f"No format_template for user {user_id}, using default: {new_template}")
-
-        original_ext = os.path.splitext(file_name)[1] or ('.mkv' if media_type == "video" else '.mp3' if media_type == "audio" else '.file')
-        template_ext_match = re.search(r'\.([a-zA-Z0-9]+)$', new_template)
-        template_ext = f".{template_ext_match.group(1)}" if template_ext_match else original_ext
-
-        if '{ext}' in new_template:
-            new_template = new_template.replace('{ext}', '')
-            target_ext = original_ext
-        elif template_ext_match:
-            new_template = re.sub(r'\.[a-zA-Z0-9]+$', '', new_template)
-            target_ext = template_ext
-        else:
-            target_ext = original_ext
-
-        replacements = {
-            '{volume}': volume or 'UNKNOWN',
-            '{chapter}': chapter or 'UNKNOWN',
-            '{season}': season,
-            '{episode}': episode,
-            '{quality}': quality,
-            '{title}': title,
-            '{suffix}': custom_suffix,
-            'Volume': volume or 'UNKNOWN',
-            'Chapter': chapter or 'UNKNOWN',
-            'Season': season,
-            'Episode': episode,
-            'QUALITY': quality,
-            'TITLE': title,
-            'SUFFIX': custom_suffix
-        }
-
-        new_filename = new_template
-        for placeholder, value in replacements.items():
-            new_filename = new_filename.replace(placeholder, str(value))
-
-        if not new_filename.strip():
-            new_filename = f"[AS] [S01-E15] Unknown_Title [720P ⌯ Sub] @{custom_suffix}"
-
-        full_filename = f"{new_filename}{target_ext}"
-        # Minimal check for max filename length (Telegram/Windows limit)
-        if len(full_filename) > 255:
-            full_filename = full_filename[:255 - len(target_ext)] + target_ext
-
-        download_path = f"downloads/{user_id}/{full_filename}"
-        metadata_path = f"metadata/{user_id}/{full_filename}"
-
-        os.makedirs(os.path.dirname(download_path), exist_ok=True)
-        os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
-
-        msg = await attempt_operation(
-            lambda: message.reply_text("**Downloading...**"),
-            "send downloading message"
-        )
-        if not msg:
-            return
-
-        # Direct processing without task creation
         try:
+            format_template = await attempt_operation(
+                lambda: codeflixbots.get_format_template(user_id),
+                "get format template"
+            )
+            rename_mode = await attempt_operation(
+                lambda: codeflixbots.get_user_choice(user_id),
+                "get user choice"
+            )
+            custom_suffix = await attempt_operation(
+                lambda: codeflixbots.get_custom_suffix(user_id),
+                "get custom suffix"
+            ) or "Finished_Society"
+            media_preference = await attempt_operation(
+                lambda: codeflixbots.get_media_preference(user_id),
+                "get media preference"
+            )
+
+            if message.document:
+                file_name = message.document.file_name or "document"
+                file_size = message.document.file_size
+                media_type = "document"
+            elif message.video:
+                file_name = message.video.file_name or "video"
+                file_size = message.video.file_size
+                media_type = "video"
+            elif message.audio:
+                file_name = message.audio.file_name or "audio"
+                file_size = message.audio.file_size
+                media_type = "audio"
+            else:
+                await message.reply_text("Unsupported file type")
+                return
+
+            if media_preference and media_preference != media_type:
+                await message.reply_text(f"Your media preference is set to '{media_preference}'. Please upload a {media_preference} file or change it with /setmedia.")
+                return
+
+            if await check_anti_nsfw(file_name, message):
+                await message.reply_text("NSFW content detected")
+                return
+
+            input_text = message.caption or file_name
+            volume, chapter, season, episode, title = extract_metadata(input_text, rename_mode)
+            quality = extract_quality(rename_mode or input_text)
+
+            title = title or "Unknown_Title"
+            season = season or "01"
+            episode = episode or "15"
+            quality = quality or "720P"
+
+            if format_template:
+                new_template = format_template
+            else:
+                new_template = "[AS] [S{season}-E{episode}] {title} [{quality} ⌯ Sub] @{suffix}{ext}"
+                logger.info(f"No format_template for user {user_id}, using default: {new_template}")
+
+            original_ext = os.path.splitext(file_name)[1] or ('.mkv' if media_type == "video" else '.mp3' if media_type == "audio" else '.file')
+            template_ext_match = re.search(r'\.([a-zA-Z0-9]+)$', new_template)
+            template_ext = f".{template_ext_match.group(1)}" if template_ext_match else original_ext
+
+            if '{ext}' in new_template:
+                new_template = new_template.replace('{ext}', '')
+                target_ext = original_ext
+            elif template_ext_match:
+                new_template = re.sub(r'\.[a-zA-Z0-9]+$', '', new_template)
+                target_ext = template_ext
+            else:
+                target_ext = original_ext
+
+            replacements = {
+                '{volume}': volume or 'UNKNOWN',
+                '{chapter}': chapter or 'UNKNOWN',
+                '{season}': season,
+                '{episode}': episode,
+                '{quality}': quality,
+                '{title}': title,
+                '{suffix}': custom_suffix,
+                'Volume': volume or 'UNKNOWN',
+                'Chapter': chapter or 'UNKNOWN',
+                'Season': season,
+                'Episode': episode,
+                'QUALITY': quality,
+                'TITLE': title,
+                'SUFFIX': custom_suffix
+            }
+
+            new_filename = new_template
+            for placeholder, value in replacements.items():
+                new_filename = new_filename.replace(placeholder, str(value))
+
+            if not new_filename.strip():
+                new_filename = f"[AS] [S01-E15] Unknown_Title [720P ⌯ Sub] @{custom_suffix}"
+
+            full_filename = f"{new_filename}{target_ext}"
+            if len(full_filename) > 255:
+                full_filename = full_filename[:255 - len(target_ext)] + target_ext
+
+            download_path = f"downloads/{user_id}/{file_id}_{full_filename}"  # Unique path per file_id
+            metadata_path = f"metadata/{user_id}/{file_id}_{full_filename}"
+
+            os.makedirs(os.path.dirname(download_path), exist_ok=True)
+            os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
+
+            msg = await attempt_operation(
+                lambda: message.reply_text("**Downloading...**"),
+                "send downloading message"
+            )
+            if not msg:
+                return
+
             file_path = await attempt_operation(
                 lambda: client.download_media(
                     message,
@@ -464,13 +465,10 @@ async def process_file(client, message):
             else:
                 await msg.edit("Error: Upload failed.")
         except Exception as e:
-            logger.error(f"Processing failed for user {user_id}: {e}")
+            logger.error(f"Processing failed for user {user_id}, file {file_id}: {e}")
             await msg.edit(f"Error: Processing failed: {e}")
         finally:
             await cleanup_files(download_path, metadata_path, thumb_path)
 
-    except Exception as e:
-        logger.error(f"Processing error for user {user_id}: {e}")
-        await message.reply_text(f"Error: {str(e)}")
-
-            
+    # Run each file processing in a separate coroutine
+    asyncio.create_task(process_single_file())
