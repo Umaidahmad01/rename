@@ -25,27 +25,27 @@ logger = logging.getLogger(__name__)
 renaming_operations = {}
 user_tasks = {}
 
-# Patterns for extracting volume, chapter, season, episode
+# Refined metadata patterns
 METADATA_PATTERNS = [
+    (re.compile(r'S(\d+)(?:E|EP|_|\s)(\d+)', re.IGNORECASE), ('season', 'episode')),  # S01E09, S01 E09, S01_09
+    (re.compile(r'Season\s*(\d+)\s*Episode\s*(\d+)', re.IGNORECASE), ('season', 'episode')),
+    (re.compile(r'\[S(\d+)\]\[E(\d+)\]', re.IGNORECASE), ('season', 'episode')),
+    (re.compile(r'S(\d+)[^\d]*(\d+)', re.IGNORECASE), ('season', 'episode')),
     (re.compile(r'(?:Vol|Volume|V)\s*(\d+)', re.IGNORECASE), ('volume', None)),
     (re.compile(r'(?:Ch|Chapter|C)\s*(\d+)', re.IGNORECASE), (None, 'chapter')),
     (re.compile(r'V(\d+)[^\d]*C(\d+)', re.IGNORECASE), ('volume', 'chapter')),
     (re.compile(r'Volume\s*(\d+)\s*Chapter\s*(\d+)', re.IGNORECASE), ('volume', 'chapter')),
-    (re.compile(r'S(\d+)(?:E|EP)(\d+)', re.IGNORECASE), ('season', 'episode')),
-    (re.compile(r'S(\d+)[\s-]*(?:E|EP)(\d+)', re.IGNORECASE), ('season', 'episode')),
-    (re.compile(r'Season\s*(\d+)\s*Episode\s*(\d+)', re.IGNORECASE), ('season', 'episode')),
-    (re.compile(r'\[S(\d+)\]\[E(\d+)\]', re.IGNORECASE), ('season', 'episode')),
-    (re.compile(r'S(\d+)[^\d]*(\d+)', re.IGNORECASE), ('season', 'episode')),
     (re.compile(r'(?:E|EP|Episode)\s*(\d+)', re.IGNORECASE), (None, 'episode')),
     (re.compile(r'\b(\d+)\b', re.IGNORECASE), (None, 'episode'))
 ]
 
+# Refined quality patterns
 QUALITY_PATTERNS = [
-    (re.compile(r'\b(\d{3,4}[pi])\b', re.IGNORECASE), lambda m: m.group(1).upper()),
+    (re.compile(r'\b(\d{3,4}[pi])\b', re.IGNORECASE), lambda m: m.group(1).upper()),  # 1080p, 720p
     (re.compile(r'\b(4k|2160p)\b', re.IGNORECASE), lambda m: "4K"),
     (re.compile(r'\b(2k|1440p)\b', re.IGNORECASE), lambda m: "2K"),
     (re.compile(r'\b(HDRip|HDTV|WebRip|BluRay)\b', re.IGNORECASE), lambda m: m.group(1).upper()),
-    (re.compile(r'\b(4kX264|4kX265|X264|X265|X26)\b', re.IGNORECASE), lambda m: "X264" if m.group(1).upper() == "X26" else m.group(1).upper()),
+    (re.compile(r'\b(4kX264|4kX265|X264|X265|X26|DD\s*5\.1)\b', re.IGNORECASE), lambda m: "X264" if m.group(1).upper() == "X26" else m.group(1).upper()),
     (re.compile(r'\[(\d{3,4}[pi])\]', re.IGNORECASE), lambda m: m.group(1).upper())
 ]
 
@@ -72,10 +72,12 @@ def extract_metadata(input_text, rename_mode):
         logger.warning(f"No input text for rename_mode {rename_mode}")
         return None, None, None, None, None
     input_text = str(input_text)
-    title = None
-    title_match = re.match(r'^(.*?)(?:S\d+|Season|E\d+|Episode|\d{3,4}[pi]|\[|$)', input_text, re.IGNORECASE)
-    if title_match:
-        title = title_match.group(1).strip().replace('.', ' ').title()
+    
+    # Extract title: Everything before season/episode or quality
+    title_match = re.match(r'^(.*?)(?:S\d+|Season|E\d+|Episode|\d{3,4}[pi]|WebRip|BluRay|Hin\s*Eng|DD\s*5\.1|\[|$)', input_text, re.IGNORECASE)
+    title = title_match.group(1).strip().replace('.', ' ').title() if title_match else None
+    if title:
+        title = re.sub(r'\s+', ' ', title).strip()
     
     for pattern, (key1, key2) in METADATA_PATTERNS:
         match = pattern.search(input_text)
@@ -87,6 +89,7 @@ def extract_metadata(input_text, rename_mode):
             elif key1 == 'season':
                 season = match.group(1).zfill(2)
                 episode = match.group(2).zfill(2) if key2 == 'episode' and len(match.groups()) >= 2 else None
+                logger.info(f"Extracted season: {season}, episode: {episode}, title: {title}")
                 return None, None, season, episode, title
             elif key2 == 'chapter':
                 chapter = match.group(1).zfill(2)
@@ -236,7 +239,7 @@ async def set_suffix(client, message):
         return await message.reply_text("Please provide a suffix, e.g., /setsuffix Finished_Society")
     suffix = message.command[1]
     await codeflixbots.set_custom_suffix(user_id, suffix)
-    await message.reply_text(f"Suffix set to: {suffix}")
+    await message.reply_text(f"Suffix set to: {suffix} ✅")
 
 @Client.on_message(filters.command("settemplate") & filters.private)
 async def set_template(client, message):
@@ -245,7 +248,7 @@ async def set_template(client, message):
         return await message.reply_text("Please provide a template, e.g., /settemplate {title}_S{season}E{episode}_{quality}_{suffix}.mkv")
     template = " ".join(message.command[1:])
     await codeflixbots.set_format_template(user_id, template)
-    await message.reply_text(f"Template set to: {template}")
+    await message.reply_text(f"Template set to: {template} ✅")
 
 @Client.on_message((filters.document | filters.video | filters.audio) & filters.private)
 async def process_file(client, message):
@@ -253,6 +256,7 @@ async def process_file(client, message):
     format_template = await codeflixbots.get_format_template(user_id)
     rename_mode = await codeflixbots.get_user_choice(user_id)
     custom_suffix = await codeflixbots.get_custom_suffix(user_id) or "Finished_Society"
+    media_preference = await codeflixbots.get_media_preference(user_id)
 
     if user_id not in user_tasks:
         user_tasks[user_id] = []
@@ -279,6 +283,10 @@ async def process_file(client, message):
     else:
         return await message.reply_text("Unsupported file type")
 
+    # Check if media type matches user preference (if set)
+    if media_preference and media_preference != media_type:
+        return await message.reply_text(f"Your media preference is set to '{media_preference}'. Please upload a {media_preference} file or change it with /setmedia.")
+
     if await check_anti_nsfw(file_name, message):
         return await message.reply_text("NSFW content detected")
 
@@ -295,6 +303,12 @@ async def process_file(client, message):
         input_text = file_name if rename_mode == "filename" else (message.caption or file_name)
         volume, chapter, season, episode, title = extract_metadata(input_text, rename_mode)
         quality = extract_quality(file_name)
+
+        if not title or not season or not episode:
+            logger.warning(f"Failed to extract complete metadata: title={title}, season={season}, episode={episode}")
+            title = title or "Unknown_Title"
+            season = season or "01"
+            episode = episode or "01"
 
         if format_template:
             new_template = format_template
@@ -462,3 +476,4 @@ async def process_file(client, message):
         await cleanup_files(download_path, metadata_path, thumb_path)
         renaming_operations.pop(file_id, None)
         user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
+
