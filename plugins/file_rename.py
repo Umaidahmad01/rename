@@ -27,12 +27,10 @@ user_tasks = {}
 
 # Patterns for extracting volume, chapter, season, episode
 METADATA_PATTERNS = [
-    # Manga-specific: Volume and Chapter
     (re.compile(r'(?:Vol|Volume|V)\s*(\d+)', re.IGNORECASE), ('volume', None)),
     (re.compile(r'(?:Ch|Chapter|C)\s*(\d+)', re.IGNORECASE), (None, 'chapter')),
     (re.compile(r'V(\d+)[^\d]*C(\d+)', re.IGNORECASE), ('volume', 'chapter')),
     (re.compile(r'Volume\s*(\d+)\s*Chapter\s*(\d+)', re.IGNORECASE), ('volume', 'chapter')),
-    # Video-specific: Season and Episode
     (re.compile(r'S(\d+)(?:E|EP)(\d+)', re.IGNORECASE), ('season', 'episode')),
     (re.compile(r'S(\d+)[\s-]*(?:E|EP)(\d+)', re.IGNORECASE), ('season', 'episode')),
     (re.compile(r'Season\s*(\d+)\s*Episode\s*(\d+)', re.IGNORECASE), ('season', 'episode')),
@@ -53,31 +51,24 @@ QUALITY_PATTERNS = [
 
 def sanitize_filename(filename, keep_extension=True, max_length=255):
     """
-    Sanitizes a filename, preserving the @ symbol for Telegram handles.
-    
-    Args:
-        filename (str): Original filename to sanitize.
-        keep_extension (bool): Whether to preserve file extension.
-        max_length (int): Maximum length of the final filename.
-    
-    Returns:
-        str: Sanitized filename with @ preserved.
+    Sanitizes a filename, preserving spaces and @ symbol for Telegram handles.
     """
     if not filename:
         return "unnamed_file"
     
     name, ext = os.path.splitext(filename) if keep_extension else (filename, "")
     
-    # Clean the name, preserve @
-    clean = re.sub(r'[^a-zA-Z0-9\s\-\[\]\(\)\.@]', '_', name)
-    clean = re.sub(r'\s+', '_', clean).strip('_ ')
-    clean = clean.replace('..', '.').replace('__', '_')
+    # Clean the name, preserve @ and spaces
+    clean = re.sub(r'[^a-zA-Z0-9\s\-\[\]\(\)\.@]', '', name)
+    clean = clean.strip()
+    clean = re.sub(r'[\[\]\(\)]+', lambda m: m.group(0)[0], clean)
+    clean = clean.replace('..', '.')
     
     # Reconstruct filename
     result = f"{clean}{ext}"[:max_length]
     
     # Final cleanup
-    result = result.strip('_').strip('.')
+    result = result.strip('.')
     if not result:
         result = "unnamed_file"
     if keep_extension and ext and not result.endswith(ext):
@@ -88,27 +79,31 @@ def sanitize_filename(filename, keep_extension=True, max_length=255):
 def extract_metadata(input_text, rename_mode):
     if not input_text:
         logger.warning(f"No input text for rename_mode {rename_mode}")
-        return None, None, None, None
+        return None, None, None, None, None
     input_text = str(input_text)
+    title = None
+    title_match = re.match(r'^(.*?)(?:S\d+|Season|E\d+|Episode|\d{3,4}[pi]|\[|$)', input_text, re.IGNORECASE)
+    if title_match:
+        title = title_match.group(1).strip()
     for pattern, (key1, key2) in METADATA_PATTERNS:
         match = pattern.search(input_text)
         if match:
             if key1 == 'volume':
                 volume = match.group(1)
                 chapter = match.group(2) if key2 == 'chapter' and len(match.groups()) >= 2 else None
-                return volume, chapter, None, None
+                return volume, chapter, None, None, title
             elif key1 == 'season':
                 season = match.group(1)
                 episode = match.group(2) if key2 == 'episode' and len(match.groups()) >= 2 else None
-                return None, None, season, episode
+                return None, None, season, episode, title
             elif key2 == 'chapter':
                 chapter = match.group(1)
-                return None, chapter, None, None
+                return None, chapter, None, None, title
             elif key2 == 'episode':
                 episode = match.group(1)
-                return None, None, None, episode
+                return None, None, None, episode, title
     logger.warning(f"No metadata matched for {rename_mode}: {input_text}")
-    return None, None, None, None
+    return None, None, None, None, title
 
 def extract_quality(filename):
     if not filename:
@@ -221,11 +216,30 @@ async def send_to_dump_channel(client, message, user_id):
             break
     return None
 
+@Client.on_message(filters.command("setsuffix") & filters.private)
+async def set_suffix(client, message):
+    user_id = message.from_user.id
+    if len(message.command) < 2:
+        return await message.reply_text("Please provide a suffix, e.g., /setsuffix Finished_Society")
+    suffix = message.command[1]
+    await codeflixbots.set_custom_suffix(user_id, suffix)
+    await message.reply_text(f"Suffix set to: {suffix}")
+
+@Client.on_message(filters.command("settemplate") & filters.private)
+async def set_template(client, message):
+    user_id = message.from_user.id
+    if len(message.command) < 2:
+        return await message.reply_text("Please provide a template, e.g., /settemplate [AS] [S{season}-E{episode}] {title} [{quality}] @{suffix}")
+    template = " ".join(message.command[1:])
+    await codeflixbots.set_format_template(user_id, template)
+    await message.reply_text(f"Template set to: {template}")
+
 @Client.on_message((filters.document | filters.video | filters.audio) & filters.private)
 async def process_file(client, message):
     user_id = message.from_user.id
     format_template = await codeflixbots.get_format_template(user_id)
     rename_mode = await codeflixbots.get_user_choice(user_id)
+    custom_suffix = await codeflixbots.get_custom_suffix(user_id) or "Finished_Society"
 
     if user_id not in user_tasks:
         user_tasks[user_id] = []
@@ -261,45 +275,43 @@ async def process_file(client, message):
     renaming_operations[file_id] = datetime.now()
 
     try:
-        # Default renaming if no mode set
         if not rename_mode:
-            rename_mode = "filename"  # Default to filename-based renaming
+            rename_mode = "filename"
             logger.info(f"No rename_mode set for user {user_id}, defaulting to filename")
 
-        # Extract metadata from filename or caption
         input_text = file_name if rename_mode == "filename" else (message.caption or file_name)
-        volume, chapter, season, episode = extract_metadata(input_text, rename_mode)
+        volume, chapter, season, episode, title = extract_metadata(input_text, rename_mode)
         quality = extract_quality(file_name)
 
-        # Use format_template if available, else fallback to filename
         if format_template:
             new_template = format_template
         else:
-            new_template = os.path.splitext(file_name)[0]  # Use filename without extension
-            logger.info(f"No format_template for user {user_id}, using filename: {new_template}")
+            new_template = "[AS] [S{season}-E{episode}] {title} [{quality} ⌯ Sub] @{suffix}"
+            logger.info(f"No format_template for user {user_id}, using default: {new_template}")
 
-        # Detect template extension
         template_ext_match = re.search(r'\.([a-zA-Z0-9]+)$', new_template)
         template_ext = f".{template_ext_match.group(1)}" if template_ext_match else None
-        original_ext = os.path.splitext(file_name)[1] or ('.mp4' if media_type == "video" else '.mp3')
+        original_ext = os.path.splitext(file_name)[1] or ('.mkv' if media_type == "video" else '.mp3')
         target_ext = template_ext if template_ext else original_ext
 
-        # Remove extension from template for processing
         if template_ext:
             new_template = re.sub(r'\.[a-zA-Z0-9]+$', '', new_template)
 
-        # Replace placeholders with UNKNOWN for missing values
         replacements = {
             '{volume}': volume or 'UNKNOWN',
             '{chapter}': chapter or 'UNKNOWN',
             '{season}': season or 'UNKNOWN',
             '{episode}': episode or 'UNKNOWN',
             '{quality}': quality,
+            '{title}': title or 'Unknown_Title',
+            '{suffix}': custom_suffix,
             'Volume': volume or 'UNKNOWN',
             'Chapter': chapter or 'UNKNOWN',
             'Season': season or 'UNKNOWN',
             'Episode': episode or 'UNKNOWN',
-            'QUALITY': quality
+            'QUALITY': quality,
+            'TITLE': title or 'Unknown_Title',
+            'SUFFIX': custom_suffix
         }
 
         for placeholder, value in replacements.items():
@@ -308,7 +320,15 @@ async def process_file(client, message):
         if not new_template.strip():
             new_template = f"file_{user_id}"
 
-        new_filename = sanitize_filename(f"{new_template}{target_ext}")
+        full_filename = f"{new_template}{target_ext}"
+
+        if len(full_filename) > 255:
+            new_template = "[AS] [S{season}-E{episode}] {title} [{quality}] @{suffix}"
+            for placeholder, value in replacements.items():
+                new_template = new_template.replace(placeholder, str(value))
+            full_filename = f"{new_template}{target_ext}"
+
+        new_filename = sanitize_filename(full_filename)
         download_path = f"downloads/{new_filename}"
         metadata_path = f"metadata/{new_filename}"
 
@@ -407,7 +427,6 @@ async def process_file(client, message):
             await send_log(client, message.from_user, f"Upload failed: {str(e)}")
             return
 
-        # Send to dump channel in background
         try:
             if os.path.exists(file_path):
                 asyncio.create_task(send_to_dump_channel(client, sent_message, user_id))
@@ -426,3 +445,4 @@ async def process_file(client, message):
         await cleanup_files(download_path, metadata_path, thumb_path)
         renaming_operations.pop(file_id, None)
         user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
+
