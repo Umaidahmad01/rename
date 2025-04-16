@@ -187,6 +187,16 @@ class Database:
             logging.error(f"Failed to get media preference for user {id}: {e}")
             return None
 
+    async def reset_media_preference(obito, id):
+        try:
+            await obito.col.update_one(
+                {"_id": int(id)}, {"$set": {"media_type": None}}
+            )
+            logging.info(f"Reset media preference for user {id}")
+        except Exception as e:
+            logging.error(f"Failed to reset media preference for user {id}: {e}")
+            raise e
+
     async def get_metadata(obito, user_id):
         try:
             user = await obito.col.find_one({'_id': int(user_id)})
