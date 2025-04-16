@@ -8,13 +8,14 @@ from datetime import datetime
 from PIL import Image
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait, MessageNotModified, ChatAdminRequired
-from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
 from plugins.antinsfw import check_anti_nsfw
 from helper.utils import progress_for_pyrogram, humanbytes, send_log
 from helper.database import codeflixbots
-from config import Config
+from config import Config, Txt
+import psutil
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,30 +51,21 @@ QUALITY_PATTERNS = [
 ]
 
 def sanitize_filename(filename, keep_extension=True, max_length=255):
-    """
-    Sanitizes a filename, preserving spaces and @ symbol for Telegram handles.
-    """
     if not filename:
         return "unnamed_file"
     
     name, ext = os.path.splitext(filename) if keep_extension else (filename, "")
-    
-    # Clean the name, preserve @ and spaces
     clean = re.sub(r'[^a-zA-Z0-9\s\-\[\]\(\)\.@]', '', name)
     clean = clean.strip()
     clean = re.sub(r'[\[\]\(\)]+', lambda m: m.group(0)[0], clean)
     clean = clean.replace('..', '.')
     
-    # Reconstruct filename
     result = f"{clean}{ext}"[:max_length]
-    
-    # Final cleanup
     result = result.strip('.')
     if not result:
         result = "unnamed_file"
     if keep_extension and ext and not result.endswith(ext):
         result = f"{result}{ext}"
-    
     return result
 
 def extract_metadata(input_text, rename_mode):
@@ -138,34 +130,64 @@ async def process_thumbnail(thumb_path):
         await cleanup_files(thumb_path)
         return None
 
+def sanitize_metadata_value(value):
+    """Remove or escape problematic characters for FFmpeg metadata."""
+    if not value:
+        return None
+    # Remove control characters, quotes, and excessive whitespace
+    value = re.sub(r'[\x00-\x1F\x7F"\']', '', value).strip()
+    # Limit length to avoid FFmpeg issues
+    return value[:255] if value else None
+
 async def add_metadata(input_path, output_path, user_id):
     ffmpeg = shutil.which('ffmpeg')
+    logger.info(f"FFmpeg path: {ffmpeg}")
     if not ffmpeg:
         logger.error("FFmpeg not found")
         raise RuntimeError("FFmpeg not found")
     
+    # Validate file paths
+    if not os.path.exists(input_path):
+        logger.error(f"Input file {input_path} does not exist")
+        raise RuntimeError(f"Input file {input_path} does not exist")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    # Log memory usage
+    process = psutil.Process()
+    mem_info = process.memory_info()
+    logger.info(f"Memory usage before FFmpeg: RSS={mem_info.rss / 1024**2:.2f}MB, VMS={mem_info.vms / 1024**2:.2f}MB")
+
     try:
-        metadata = {
-            'title': await codeflixbots.get_title(user_id),
-            'artist': await codeflixbots.get_artist(user_id),
-            'author': await codeflixbots.get_author(user_id),
-            'video_title': await codeflixbots.get_video(user_id),
-            'audio_title': await codeflixbots.get_audio(user_id),
-            'subtitle': await codeflixbots.get_subtitle(user_id)
-        }
+        metadata = {}
+        for key, getter in [
+            ('title', codeflixbots.get_title),
+            ('artist', codeflixbots.get_artist),
+            ('author', codeflixbots.get_author),
+            ('video_title', codeflixbots.get_video),
+            ('audio_title', codeflixbots.get_audio),
+            ('subtitle', codeflixbots.get_subtitle)
+        ]:
+            try:
+                value = await getter(user_id)
+                metadata[key] = sanitize_metadata_value(value)
+                logger.info(f"Retrieved {key} for user {user_id}: {metadata[key]}")
+            except Exception as e:
+                logger.error(f"Error retrieving {key} for user {user_id}: {e}")
+                metadata[key] = None
+
         cmd = [ffmpeg, '-i', input_path, '-map', '0', '-c', 'copy', '-loglevel', 'error']
         has_metadata = False
         for key, value in metadata.items():
             if value:
                 has_metadata = True
                 if key == 'video_title':
-                    cmd.extend(['-metadata:s:v', f'title="{value}"'])
+                    cmd.extend(['-metadata:s:v', f'title={value}'])
                 elif key == 'audio_title':
-                    cmd.extend(['-metadata:s:a', f'title="{value}"'])
+                    cmd.extend(['-metadata:s:a', f'title={value}'])
                 elif key == 'subtitle':
-                    cmd.extend(['-metadata:s:s', f'title="{value}"'])
+                    cmd.extend(['-metadata:s:s', f'title={value}'])
                 else:
-                    cmd.extend(['-metadata', f'{key}="{value}"'])
+                    cmd.extend(['-metadata', f'{key}={value}'])
         if not has_metadata:
             logger.info(f"No valid metadata for user {user_id}, skipping")
             return False
@@ -178,7 +200,7 @@ async def add_metadata(input_path, output_path, user_id):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300.0)
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=600.0)
         
         if process.returncode != 0:
             logger.error(f"FFmpeg error (return code {process.returncode}): {stderr.decode()}")
@@ -189,11 +211,14 @@ async def add_metadata(input_path, output_path, user_id):
         logger.info(f"Metadata added in {time.time() - start_time:.2f}s")
         return True
     except asyncio.TimeoutError:
-        logger.error(f"Metadata processing timed out")
+        logger.error(f"Metadata processing timed out after 600s")
         return False
     except Exception as e:
         logger.error(f"Metadata processing failed: {e}")
         raise
+    finally:
+        mem_info = process.memory_info()
+        logger.info(f"Memory usage after FFmpeg: RSS={mem_info.rss / 1024**2:.2f}MB, VMS={mem_info.vms / 1024**2:.2f}MB")
 
 async def send_to_dump_channel(client, message, user_id):
     max_retries = 3
@@ -360,14 +385,18 @@ async def process_file(client, message):
             await msg.edit(f"Download failed: {e}")
             await send_log(client, message.from_user, f"Download failed: {str(e)}")
             return
-
-        metadata_enabled = await codeflixbots.get_metadata(user_id)
+        metadata_enabled = await codeflixbots.get_metadata(user_id) == "On"  # Updated to check for "On"
         if metadata_enabled:
             await msg.edit("**Processing metadata...**")
             try:
-                if await add_metadata(file_path, metadata_path, user_id):
+                if not os.path.exists(file_path):
+                    logger.error(f"Input file {file_path} does not exist for metadata")
+                    await msg.edit("Error: Input file not found, skipping metadata")
+                    await send_log(client, message.from_user, f"Metadata failed: Input file {file_path} missing")
+                elif await add_metadata(file_path, metadata_path, user_id):
                     if os.path.exists(metadata_path):
                         file_path = metadata_path
+                        logger.info(f"Using metadata file: {metadata_path}")
                     else:
                         logger.warning(f"Metadata file {metadata_path} not found, using {file_path}")
                 else:
@@ -446,3 +475,169 @@ async def process_file(client, message):
         renaming_operations.pop(file_id, None)
         user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
 
+# Metadata Commands
+@Client.on_message(filters.command("metadata") & filters.private)
+async def metadata(client, message):
+    user_id = message.from_user.id
+
+    current = await codeflixbots.get_metadata(user_id)
+    title = await codeflixbots.get_title(user_id)
+    author = await codeflixbots.get_author(user_id)
+    artist = await codeflixbots.get_artist(user_id)
+    video = await codeflixbots.get_video(user_id)
+    audio = await codeflixbots.get_audio(user_id)
+    subtitle = await codeflixbots.get_subtitle(user_id)
+
+    text = f"""
+**㊋ Yᴏᴜʀ Mᴇᴛᴀᴅᴀᴛᴀ ɪꜱ ᴄᴜʀʀᴇɴᴛʟʏ: {current}**
+
+**◈ Tɪᴛʟᴇ ▹** `{title if title else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
+**◈ Aᴜᴛʜᴏʀ ▹** `{author if author else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
+**◈ Aʀᴛɪꜱᴛ ▹** `{artist if artist else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
+**◈ Aᴜᴅɪᴏ ▹** `{audio if audio else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
+**◈ Sᴜʙᴛɪᴛʟᴇ ▹** `{subtitle if subtitle else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
+**◈ Vɪᴅᴇᴏ ▹** `{video if video else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
+    """
+
+    buttons = [
+        [
+            InlineKeyboardButton(f"On{' ✅' if current == 'On' else ''}", callback_data='on_metadata'),
+            InlineKeyboardButton(f"Off{' ✅' if current == 'Off' else ''}", callback_data='off_metadata')
+        ],
+        [
+            InlineKeyboardButton("How to Set Metadata", callback_data="metainfo")
+        ]
+    ]
+    keyboard = InlineKeyboardMarkup(buttons)
+
+    await message.reply_text(text=text, reply_markup=keyboard, disable_web_page_preview=True)
+
+@Client.on_callback_query(filters.regex(r"on_metadata|off_metadata|metainfo"))
+async def metadata_callback(client, query: CallbackQuery):
+    user_id = query.from_user.id
+    data = query.data
+
+    if data == "on_metadata":
+        await codeflixbots.set_metadata(user_id, "On")
+    elif data == "off_metadata":
+        await codeflixbots.set_metadata(user_id, "Off")
+    elif data == "metainfo":
+        await query.message.edit_text(
+            text=Txt.META_TXT,
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("Hᴏᴍᴇ", callback_data="home"),
+                    InlineKeyboardButton("close", callback_data="close")
+                ]
+            ])
+        )
+        return
+
+    current = await codeflixbots.get_metadata(user_id)
+    title = await codeflixbots.get_title(user_id)
+    author = await codeflixbots.get_author(user_id)
+    artist = await codeflixbots.get_artist(user_id)
+    video = await codeflixbots.get_video(user_id)
+    audio = await codeflixbots.get_audio(user_id)
+    subtitle = await codeflixbots.get_subtitle(user_id)
+
+    text = f"""
+**㊋ Yᴏᴜʀ Mᴇᴛᴀᴅᴀᴛᴀ ɪꜱ ᴄᴜʀʀᴇɴᴛʟʏ: {current}**
+
+**◈ Tɪᴛʟᴇ ▹** `{title if title else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
+**◈ Aᴜᴛʜᴏʀ ▹** `{author if author else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
+**◈ Aʀᴛɪꜱᴛ ▹** `{artist if artist else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
+**◈ Aᴜᴅɪᴏ ▹** `{audio if audio else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
+**◈ Sᴜʙᴛɪᴛʟᴇ ▹** `{subtitle if subtitle else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
+**◈ Vɪᴅᴇᴏ ▹** `{video if video else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
+    """
+
+    buttons = [
+        [
+            InlineKeyboardButton(f"On{' ✅' if current == 'On' else ''}", callback_data='on_metadata'),
+            InlineKeyboardButton(f"Off{' ✅' if current == 'Off' else ''}", callback_data='off_metadata')
+        ],
+        [
+            InlineKeyboardButton("How to Set Metadata", callback_data="metainfo")
+        ]
+    ]
+    await query.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+
+@Client.on_message(filters.private & filters.command('settitle'))
+async def title(client, message):
+    if len(message.command) == 1:
+        return await message.reply_text(
+            "**Gɪᴠᴇ Tʜᴇ Tɪᴛʟᴇ\n\nExᴀᴍᴩʟᴇ:- /settitle Encoded By @Animes_Cruise**")
+    title = message.text.split(" ", 1)[1]
+    await codeflixbots.set_title(message.from_user.id, title=title)
+    await message.reply_text("**✅ Tɪᴛʟᴇ Sᴀᴠᴇᴅ**")
+
+@Client.on_message(filters.private & filters.command('setauthor'))
+async def author(client, message):
+    if len(message.command) == 1:
+        return await message.reply_text(
+            "**Gɪᴠᴇ Tʜᴇ Aᴜᴛʜᴏʀ\n\nExᴀᴍᴩʟᴇ:- /setauthor @Animes_Cruise**")
+    author = message.text.split(" ", 1)[1]
+    await codeflixbots.set_author(message.from_user.id, author=author)
+    await message.reply_text("**✅ Aᴜᴛʜᴏʀ Sᴀᴠᴇᴅ**")
+
+@Client.on_message(filters.private & filters.command('setartist'))
+async def artist(client, message):
+    if len(message.command) == 1:
+        return await message.reply_text(
+            "**Gɪᴠᴇ Tʜᴇ Aʀᴛɪꜱᴛ\n\nExᴀᴍᴩʟᴇ:- /setartist @Animes_Cruise**")
+    artist = message.text.split(" ", 1)[1]
+    await codeflixbots.set_artist(message.from_user.id, artist=artist)
+    await message.reply_text("**✅ Aʀᴛɪꜱᴛ Sᴀᴠᴇᴅ**")
+
+@Client.on_message(filters.private & filters.command('setaudio'))
+async def audio(client, message):
+    if len(message.command) == 1:
+        return await message.reply_text(
+            "**Gɪᴠᴇ T� MotorHᴇ Aᴜᴅɪᴏ Tɪᴛʟᴇ\n\nExᴀᴍᴩʟᴇ:- /setaudio @Animes_Cruise**")
+    audio = message.text.split(" ", 1)[1]
+    await codeflixbots.set_audio(message.from_user.id, audio=audio)
+    await message.reply_text("**✅ Aᴜᴅɪᴏ Sᴀᴠᴇᴅ**")
+
+@Client.on_message(filters.private & filters.command('setsubtitle'))
+async def subtitle(client, message):
+    if len(message.command) == 1:
+        return await message.reply_text(
+            "**Gɪᴠᴇ Tʜᴇ Sᴜʙᴛɪᴛʟᴇ Tɪᴛʟᴇ\n\nExᴀᴍᴩʟᴇ:- /setsubtitle @Animes_Cruise**")
+    subtitle = message.text.split(" ", 1)[1]
+    await codeflixbots.set_subtitle(message.from_user.id, subtitle=subtitle)
+    await message.reply_text("**✅ Sᴜʙᴛɪᴛʟᴇ Sᴀᴠᴇᴅ**")
+
+@Client.on_message(filters.private & filters.command('setvideo'))
+async def video(client, message):
+    if len(message.command) == 1:
+        return await message.reply_text(
+            "**Gɪᴠᴇ Tʜᴇ Vɪᴅᴇᴏ Tɪᴛʟᴇ\n\nExᴀᴍᴩʟᴇ:- /setvideo Encoded by @Animes_Cruise**")
+    video = message.text.split(" ", 1)[1]
+    await codeflixbots.set_video(message.from_user.id, video=video)
+    await message.reply_text("**✅ Vɪᴅᴇᴏ Sᴀᴠᴇᴅ**")
+
+@Client.on_message(filters.command("debug_metadata") & filters.private)
+async def debug_metadata(client, message):
+    user_id = message.from_user.id
+    try:
+        metadata_enabled = await codeflixbots.get_metadata(user_id)
+        metadata = {
+            'title': await codeflixbots.get_title(user_id),
+            'artist': await codeflixbots.get_artist(user_id),
+            'author': await codeflixbots.get_author(user_id),
+            'video_title': await codeflixbots.get_video(user_id),
+            'audio_title': await codeflixbots.get_audio(user_id),
+            'subtitle': await codeflixbots.get_subtitle(user_id)
+        }
+        response = f"Metadata Enabled: {metadata_enabled}\nMetadata Values:\n"
+        for key, value in metadata.items():
+            response += f"{key}: {value}\n"
+        await message.reply_text(response)
+    except Exception as e:
+        logger.error(f"Error debugging metadata for user {user_id}: {e}")
+        await message.reply_text(f"Error: {str(e)}")
+
+
+    
