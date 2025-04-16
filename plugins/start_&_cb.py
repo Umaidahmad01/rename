@@ -368,14 +368,12 @@ async def upscale_image(client, message):
         photo_path = f"downloads/{user_id}_upscale_{int(time.time())}.jpg"
         await client.download_media(message.photo, file_name=photo_path)
 
-        # Use OpenCV for upscaling
         img = cv2.imread(photo_path)
         scale_factor = await codeflixbots.get_upscale_factor(user_id) or 2.0
         height, width = img.shape[:2]
         new_size = (int(width * scale_factor), int(height * scale_factor))
         upscaled_img = cv2.resize(img, new_size, interpolation=cv2.INTER_CUBIC)
 
-        # Enhance quality
         upscaled_img = cv2.convertScaleAbs(upscaled_img, alpha=1.1, beta=10)
         upscaled_path = f"downloads/{user_id}_upscaled_{int(time.time())}.jpg"
         cv2.imwrite(upscaled_path, upscaled_img)
@@ -402,7 +400,6 @@ async def extract_thumbnail(client, message):
         thumb_path = f"downloads/{user_id}_thumb_{int(time.time())}.jpg"
         await client.download_media(message.video, file_name=video_path)
 
-        # Extract thumbnail using FFmpeg
         ffmpeg_cmd = [
             "ffmpeg", "-i", video_path, "-ss", "00:00:01", "-vframes", "1",
             "-vf", "scale=320:320:force_original_aspect_ratio=decrease",
@@ -430,5 +427,4 @@ async def extract_thumbnail(client, message):
     except Exception as e:
         logger.error(f"Error extracting thumbnail for user {user_id}: {e}")
         await msg.edit(f"Error extracting thumbnail: {str(e)}")
-
 
