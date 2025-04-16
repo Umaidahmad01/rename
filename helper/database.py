@@ -415,4 +415,40 @@ class Database:
             logging.error(f"Error sending file to DUMP_CHANNEL: {str(e)}")
             return False
 
+    # New method for /clear
+    async def clear_user_tasks(obito, user_id: int) -> bool:
+        """
+        Clears task-related data (uploads) for the user in the database.
+        """
+        for attempt in range(3):  # Retry for robustness
+            try:
+                result = await obito.col.update_one(
+                    {"_id": int(user_id)},
+                    {"$set": {"uploads": []}},
+                    upsert=False
+                )
+                logging.info(f"Cleared uploads for user {user_id}, modified: {result.modified_count}")
+                return result.modified_count > 0
+            except Exception as e:
+                logging.error(f"Error clearing tasks for user {user_id}, attempt {attempt+1}: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(1)
+        return False
+
+    # New helper method for /upscale
+    async def get_upscale_factor(obito, user_id: int) -> float:
+        """
+        Converts upscale_scale (e.g., '2:2') to a float for /upscale command.
+        """
+        try:
+            scale = await obito.get_upscale_scale(user_id)
+            if not scale or ":" not in scale:
+                logging.warning(f"Invalid upscale_scale '{scale}' for user {user_id}, using default")
+                return 2.0
+            factor = float(scale.split(":")[0])
+            return max(1.0, min(factor, 5.0))  # Clamp between 1x and 5x
+        except (ValueError, AttributeError, Exception) as e:
+            logging.error(f"Error parsing upscale factor for user {user_id}: {e}")
+            return 2.0  # Default to 2x
+
 codeflixbots = Database()
