@@ -1,5 +1,6 @@
 import random
 import asyncio
+from PIL import Image
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from helper.database import *
