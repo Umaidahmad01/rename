@@ -331,52 +331,104 @@ async def clear_tasks(client, message):
         logger.error(f"Error clearing tasks for user {user_id}: {e}")
         await message.reply_text(f"Failed to clear tasks: {str(e)}")
 
-@Client.on_message(filters.command("upscale") & filters.private & filters.photo)
-async def upscale_photo(client, message):
+
+@Client.on_message(filters.command("setmedia") & filters.private)
+async def set_media(client, message):
     user_id = message.from_user.id
-    input_path = f"temp/{user_id}_input.jpg"
-    output_path = f"temp/{user_id}_upscaled.jpg"
-    
-    os.makedirs("temp", exist_ok=True)
-    
+    if len(message.command) < 2:
+        return await message.reply_text("Please provide a media type, e.g., /setmedia video, /setmedia audio, /setmedia document")
+    media_type = message.command[1].lower()
+    valid_types = ['video', 'audio', 'document']
+    if media_type not in valid_types:
+        return await message.reply_text(f"Invalid media type. Choose from: {', '.join(valid_types)}")
     try:
-        # Download the photo
-        await message.reply_text("Downloading your photo...")
-        await client.download_media(message.photo, file_name=input_path)
-        
-        # Upscale the image
-        await message.reply_text("Upscaling your photo...")
-        img = cv2.imread(input_path)
-        if img is None:
-            raise ValueError("Failed to load image")
-        
+        await codeflixbots.set_media_preference(user_id, media_type)
+        await message.reply_text(f"Media preference set to: {media_type} ✅")
+        logger.info(f"Set media preference to {media_type} for user {user_id}")
+    except Exception as e:
+        logger.error(f"Error setting media preference for user {user_id}: {e}")
+        await message.reply_text(f"Error setting media preference: {str(e)}")
+
+@Client.on_message(filters.command("resetmedia") & filters.private)
+async def reset_media(client, message):
+    user_id = message.from_user.id
+    try:
+        await codeflixbots.reset_media_preference(user_id)
+        await message.reply_text("Media preference reset to default ✅")
+        logger.info(f"Reset media preference for user {user_id}")
+    except Exception as e:
+        logger.error(f"Error resetting media preference for user {user_id}: {e}")
+        await message.reply_text(f"Error resetting media preference: {str(e)}")
+
+@Client.on_message(filters.command("upscale") & filters.private & filters.photo)
+async def upscale_image(client, message):
+    user_id = message.from_user.id
+    try:
+        msg = await message.reply_text("**Processing upscale...**")
+        photo_path = f"downloads/{user_id}_upscale_{int(time.time())}.jpg"
+        await client.download_media(message.photo, file_name=photo_path)
+
+        # Use OpenCV for upscaling
+        img = cv2.imread(photo_path)
+        scale_factor = await codeflixbots.get_upscale_factor(user_id) or 2.0
         height, width = img.shape[:2]
-        new_width = int(width * 2)
-        new_height = int(height * 2)
-        upscaled = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
-        cv2.imwrite(output_path, upscaled, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
-        
-        # Send upscaled photo
-        await message.reply_text("Uploading upscaled photo...")
+        new_size = (int(width * scale_factor), int(height * scale_factor))
+        upscaled_img = cv2.resize(img, new_size, interpolation=cv2.INTER_CUBIC)
+
+        # Enhance quality
+        upscaled_img = cv2.convertScaleAbs(upscaled_img, alpha=1.1, beta=10)
+        upscaled_path = f"downloads/{user_id}_upscaled_{int(time.time())}.jpg"
+        cv2.imwrite(upscaled_path, upscaled_img)
+
         await client.send_photo(
             chat_id=message.chat.id,
-            photo=output_path,
-            caption="Upscaled photo"
+            photo=upscaled_path,
+            caption="Upscaled image ✅"
         )
-        logger.info(f"Upscaled photo sent to user {user_id}")
-    
+        await msg.delete()
+        os.remove(photo_path)
+        os.remove(upscaled_path)
+        logger.info(f"Upscaled image for user {user_id}")
     except Exception as e:
-        logger.error(f"Upscale error for user {user_id}: {e}")
-        await message.reply_text(f"Error upscaling photo: {str(e)}")
-    
-    finally:
-        # Cleanup
-        for path in (input_path, output_path):
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except Exception as e:
-                logger.error(f"Error removing {path}: {e}")
+        logger.error(f"Error upscaling image for user {user_id}: {e}")
+        await msg.edit(f"Error upscaling image: {str(e)}")
+
+@Client.on_message(filters.command("exthum") & filters.private & filters.video)
+async def extract_thumbnail(client, message):
+    user_id = message.from_user.id
+    try:
+        msg = await message.reply_text("**Extracting thumbnail...**")
+        video_path = f"downloads/{user_id}_video_{int(time.time())}.mp4"
+        thumb_path = f"downloads/{user_id}_thumb_{int(time.time())}.jpg"
+        await client.download_media(message.video, file_name=video_path)
+
+        # Extract thumbnail using FFmpeg
+        ffmpeg_cmd = [
+            "ffmpeg", "-i", video_path, "-ss", "00:00:01", "-vframes", "1",
+            "-vf", "scale=320:320:force_original_aspect_ratio=decrease",
+            thumb_path, "-y"
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *ffmpeg_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            logger.error(f"FFmpeg error extracting thumbnail: {stderr.decode()}")
+            raise RuntimeError("Failed to extract thumbnail")
+
+        await client.send_photo(
+            chat_id=message.chat.id,
+            photo=thumb_path,
+            caption="Extracted thumbnail ✅"
+        )
+        await msg.delete()
+        os.remove(video_path)
+        os.remove(thumb_path)
+        logger.info(f"Extracted thumbnail for user {user_id}")
+    except Exception as e:
+        logger.error(f"Error extracting thumbnail for user {user_id}: {e}")
+        await msg.edit(f"Error extracting thumbnail: {str(e)}")
 
 
-        
