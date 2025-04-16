@@ -68,3 +68,15 @@ async def handle_media_selection(client, callback_query: CallbackQuery):
             f"Couldn’t set {media_type} right now. Try again later!\n"
             f"Details: {str(e)}"
         )
+@Client.on_message(filters.command("resetmedia") & filters.private)
+async def reset_media(client, message):
+    user_id = message.from_user.id
+    try:
+        await codeflixbots.reset_media_preference(user_id)
+        await message.reply_text("Media preference reset to default ✅")
+        logger.info(f"Reset media preference for user {user_id}")
+    except Exception as e:
+        logger.error(f"Error resetting media preference for user {user_id}: {e}")
+        await message.reply_text(f"Error resetting media preference: {str(e)}")
+
+
