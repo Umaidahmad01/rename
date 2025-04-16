@@ -41,12 +41,12 @@ METADATA_PATTERNS = [
 ]
 
 QUALITY_PATTERNS = [
-    (re.compile(r'\b(\d{3,4}[pi])\b', re.IGNORECASE), lambda m: m.group(1)),
-    (re.compile(r'\b(4k|2160p)\b', re.IGNORECASE), lambda m: "4k"),
-    (re.compile(r'\b(2k|1440p)\b', re.IGNORECASE), lambda m: "2k"),
-    (re.compile(r'\b(HDRip|HDTV)\b', re.IGNORECASE), lambda m: m.group(1)),
-    (re.compile(r'\b(4kX264|4kx265)\b', re.IGNORECASE), lambda m: m.group(1)),
-    (re.compile(r'\[(\d{3,4}[pi])\]', re.IGNORECASE), lambda m: m.group(1))
+    (re.compile(r'\b(\d{3,4}[pi])\b', re.IGNORECASE), lambda m: m.group(1).upper()),
+    (re.compile(r'\b(4k|2160p)\b', re.IGNORECASE), lambda m: "4K"),
+    (re.compile(r'\b(2k|1440p)\b', re.IGNORECASE), lambda m: "2K"),
+    (re.compile(r'\b(HDRip|HDTV|WebRip|BluRay)\b', re.IGNORECASE), lambda m: m.group(1).upper()),
+    (re.compile(r'\b(4kX264|4kX265|X264|X265|X26)\b', re.IGNORECASE), lambda m: "X264" if m.group(1).upper() == "X26" else m.group(1).upper()),
+    (re.compile(r'\[(\d{3,4}[pi])\]', re.IGNORECASE), lambda m: m.group(1).upper())
 ]
 
 def sanitize_filename(filename, keep_extension=True, max_length=255):
@@ -54,10 +54,10 @@ def sanitize_filename(filename, keep_extension=True, max_length=255):
         return "unnamed_file"
     
     name, ext = os.path.splitext(filename) if keep_extension else (filename, "")
-    clean = re.sub(r'[^a-zA-Z0-9\s\-\[\]\(\)\.@]', '', name)
+    # Only remove OS-invalid characters
+    invalid_chars = r'[<>:"/\\|?*\x00-\x1F]'
+    clean = re.sub(invalid_chars, '', name)
     clean = clean.strip()
-    clean = re.sub(r'[\[\]\(\)]+', lambda m: m.group(0)[0], clean)
-    clean = clean.replace('..', '.')
     
     result = f"{clean}{ext}"[:max_length]
     result = result.strip('.')
@@ -75,23 +75,24 @@ def extract_metadata(input_text, rename_mode):
     title = None
     title_match = re.match(r'^(.*?)(?:S\d+|Season|E\d+|Episode|\d{3,4}[pi]|\[|$)', input_text, re.IGNORECASE)
     if title_match:
-        title = title_match.group(1).strip()
+        title = title_match.group(1).strip().replace('.', ' ').title()
+    
     for pattern, (key1, key2) in METADATA_PATTERNS:
         match = pattern.search(input_text)
         if match:
             if key1 == 'volume':
-                volume = match.group(1)
-                chapter = match.group(2) if key2 == 'chapter' and len(match.groups()) >= 2 else None
+                volume = match.group(1).zfill(2)
+                chapter = match.group(2).zfill(2) if key2 == 'chapter' and len(match.groups()) >= 2 else None
                 return volume, chapter, None, None, title
             elif key1 == 'season':
-                season = match.group(1)
-                episode = match.group(2) if key2 == 'episode' and len(match.groups()) >= 2 else None
+                season = match.group(1).zfill(2)
+                episode = match.group(2).zfill(2) if key2 == 'episode' and len(match.groups()) >= 2 else None
                 return None, None, season, episode, title
             elif key2 == 'chapter':
-                chapter = match.group(1)
+                chapter = match.group(1).zfill(2)
                 return None, chapter, None, None, title
             elif key2 == 'episode':
-                episode = match.group(1)
+                episode = match.group(1).zfill(2)
                 return None, None, None, episode, title
     logger.warning(f"No metadata matched for {rename_mode}: {input_text}")
     return None, None, None, None, title
@@ -130,12 +131,9 @@ async def process_thumbnail(thumb_path):
         return None
 
 def sanitize_metadata_value(value):
-    """Remove or escape problematic characters for FFmpeg metadata."""
     if not value:
         return None
-    # Remove control characters, quotes, and excessive whitespace
     value = re.sub(r'[\x00-\x1F\x7F"\']', '', value).strip()
-    # Limit length to avoid FFmpeg issues
     return value[:255] if value else None
 
 async def add_metadata(input_path, output_path, user_id):
@@ -145,16 +143,10 @@ async def add_metadata(input_path, output_path, user_id):
         logger.error("FFmpeg not found")
         raise RuntimeError("FFmpeg not found")
     
-    # Validate file paths
     if not os.path.exists(input_path):
         logger.error(f"Input file {input_path} does not exist")
         raise RuntimeError(f"Input file {input_path} does not exist")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-    # Log memory usage
-    process = psutil.Process()
-    mem_info = process.memory_info()
-    logger.info(f"Memory usage before FFmpeg: RSS={mem_info.rss / 1024**2:.2f}MB, VMS={mem_info.vms / 1024**2:.2f}MB")
 
     try:
         metadata = {}
@@ -215,9 +207,6 @@ async def add_metadata(input_path, output_path, user_id):
     except Exception as e:
         logger.error(f"Metadata processing failed: {e}")
         raise
-    finally:
-        mem_info = process.memory_info()
-        logger.info(f"Memory usage after FFmpeg: RSS={mem_info.rss / 1024**2:.2f}MB, VMS={mem_info.vms / 1024**2:.2f}MB")
 
 async def send_to_dump_channel(client, message, user_id):
     max_retries = 3
@@ -253,7 +242,7 @@ async def set_suffix(client, message):
 async def set_template(client, message):
     user_id = message.from_user.id
     if len(message.command) < 2:
-        return await message.reply_text("Please provide a template, e.g., /settemplate [AS] [S{season}-E{episode}] {title} [{quality}] @{suffix}")
+        return await message.reply_text("Please provide a template, e.g., /settemplate {title}_S{season}E{episode}_{quality}_{suffix}.mkv")
     template = " ".join(message.command[1:])
     await codeflixbots.set_format_template(user_id, template)
     await message.reply_text(f"Template set to: {template}")
@@ -310,7 +299,7 @@ async def process_file(client, message):
         if format_template:
             new_template = format_template
         else:
-            new_template = "[AS] [S{season}-E{episode}] {title} [{quality} ⌯ Sub] @{suffix}"
+            new_template = "{title}_S{season}E{episode}_{quality}_{suffix}.mkv"
             logger.info(f"No format_template for user {user_id}, using default: {new_template}")
 
         template_ext_match = re.search(r'\.([a-zA-Z0-9]+)$', new_template)
@@ -338,19 +327,18 @@ async def process_file(client, message):
             'SUFFIX': custom_suffix
         }
 
+        new_filename = new_template
         for placeholder, value in replacements.items():
-            new_template = new_template.replace(placeholder, str(value))
+            new_filename = new_filename.replace(placeholder, str(value))
 
-        if not new_template.strip():
-            new_template = f"file_{user_id}"
+        if not new_filename.strip():
+            new_filename = f"file_{user_id}"
 
-        full_filename = f"{new_template}{target_ext}"
+        full_filename = f"{new_filename}{target_ext}"
 
         if len(full_filename) > 255:
-            new_template = "[AS] [S{season}-E{episode}] {title} [{quality}] @{suffix}"
-            for placeholder, value in replacements.items():
-                new_template = new_template.replace(placeholder, str(value))
-            full_filename = f"{new_template}{target_ext}"
+            new_filename = f"{title or 'Unknown'}_S{season or '01'}E{episode or '01'}_{quality}"
+            full_filename = f"{new_filename}{target_ext}"
 
         new_filename = sanitize_filename(full_filename)
         download_path = f"downloads/{new_filename}"
@@ -384,7 +372,8 @@ async def process_file(client, message):
             await msg.edit(f"Download failed: {e}")
             await send_log(client, message.from_user, f"Download failed: {str(e)}")
             return
-        metadata_enabled = await codeflixbots.get_metadata(user_id) == "On"  # Updated to check for "On"
+
+        metadata_enabled = await codeflixbots.get_metadata(user_id) == "On"
         if metadata_enabled:
             await msg.edit("**Processing metadata...**")
             try:
@@ -473,170 +462,3 @@ async def process_file(client, message):
         await cleanup_files(download_path, metadata_path, thumb_path)
         renaming_operations.pop(file_id, None)
         user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
-
-# Metadata Commands
-@Client.on_message(filters.command("metadata") & filters.private)
-async def metadata(client, message):
-    user_id = message.from_user.id
-
-    current = await codeflixbots.get_metadata(user_id)
-    title = await codeflixbots.get_title(user_id)
-    author = await codeflixbots.get_author(user_id)
-    artist = await codeflixbots.get_artist(user_id)
-    video = await codeflixbots.get_video(user_id)
-    audio = await codeflixbots.get_audio(user_id)
-    subtitle = await codeflixbots.get_subtitle(user_id)
-
-    text = f"""
-**㊋ Yᴏᴜʀ Mᴇᴛᴀᴅᴀᴛᴀ ɪꜱ ᴄᴜʀʀᴇɴᴛʟʏ: {current}**
-
-**◈ Tɪᴛʟᴇ ▹** `{title if title else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Aᴜᴛʜᴏʀ ▹** `{author if author else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Aʀᴛɪꜱᴛ ▹** `{artist if artist else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Aᴜᴅɪᴏ ▹** `{audio if audio else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Sᴜʙᴛɪᴛʟᴇ ▹** `{subtitle if subtitle else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Vɪᴅᴇᴏ ▹** `{video if video else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-    """
-
-    buttons = [
-        [
-            InlineKeyboardButton(f"On{' ✅' if current == 'On' else ''}", callback_data='on_metadata'),
-            InlineKeyboardButton(f"Off{' ✅' if current == 'Off' else ''}", callback_data='off_metadata')
-        ],
-        [
-            InlineKeyboardButton("How to Set Metadata", callback_data="metainfo")
-        ]
-    ]
-    keyboard = InlineKeyboardMarkup(buttons)
-
-    await message.reply_text(text=text, reply_markup=keyboard, disable_web_page_preview=True)
-
-@Client.on_callback_query(filters.regex(r"on_metadata|off_metadata|metainfo"))
-async def metadata_callback(client, query: CallbackQuery):
-    user_id = query.from_user.id
-    data = query.data
-
-    if data == "on_metadata":
-        await codeflixbots.set_metadata(user_id, "On")
-    elif data == "off_metadata":
-        await codeflixbots.set_metadata(user_id, "Off")
-    elif data == "metainfo":
-        await query.message.edit_text(
-            text=Txt.META_TXT,
-            disable_web_page_preview=True,
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("Hᴏᴍᴇ", callback_data="home"),
-                    InlineKeyboardButton("close", callback_data="close")
-                ]
-            ])
-        )
-        return
-
-    current = await codeflixbots.get_metadata(user_id)
-    title = await codeflixbots.get_title(user_id)
-    author = await codeflixbots.get_author(user_id)
-    artist = await codeflixbots.get_artist(user_id)
-    video = await codeflixbots.get_video(user_id)
-    audio = await codeflixbots.get_audio(user_id)
-    subtitle = await codeflixbots.get_subtitle(user_id)
-
-    text = f"""
-**㊋ Yᴏᴜʀ Mᴇᴛᴀᴅᴀᴛᴀ ɪꜱ ᴄᴜʀʀᴇɴᴛʟʏ: {current}**
-
-**◈ Tɪᴛʟᴇ ▹** `{title if title else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Aᴜᴛʜᴏʀ ▹** `{author if author else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Aʀᴛɪꜱᴛ ▹** `{artist if artist else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Aᴜᴅɪᴏ ▹** `{audio if audio else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Sᴜʙᴛɪᴛʟᴇ ▹** `{subtitle if subtitle else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-**◈ Vɪᴅᴇᴏ ▹** `{video if video else 'Nᴏᴛ ꜰᴏᴜɴᴅ'}`  
-    """
-
-    buttons = [
-        [
-            InlineKeyboardButton(f"On{' ✅' if current == 'On' else ''}", callback_data='on_metadata'),
-            InlineKeyboardButton(f"Off{' ✅' if current == 'Off' else ''}", callback_data='off_metadata')
-        ],
-        [
-            InlineKeyboardButton("How to Set Metadata", callback_data="metainfo")
-        ]
-    ]
-    await query.message.edit_text(text=text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
-
-@Client.on_message(filters.private & filters.command('settitle'))
-async def title(client, message):
-    if len(message.command) == 1:
-        return await message.reply_text(
-            "**Gɪᴠᴇ Tʜᴇ Tɪᴛʟᴇ\n\nExᴀᴍᴩʟᴇ:- /settitle Encoded By @Animes_Cruise**")
-    title = message.text.split(" ", 1)[1]
-    await codeflixbots.set_title(message.from_user.id, title=title)
-    await message.reply_text("**✅ Tɪᴛʟᴇ Sᴀᴠᴇᴅ**")
-
-@Client.on_message(filters.private & filters.command('setauthor'))
-async def author(client, message):
-    if len(message.command) == 1:
-        return await message.reply_text(
-            "**Gɪᴠᴇ Tʜᴇ Aᴜᴛʜᴏʀ\n\nExᴀᴍᴩʟᴇ:- /setauthor @Animes_Cruise**")
-    author = message.text.split(" ", 1)[1]
-    await codeflixbots.set_author(message.from_user.id, author=author)
-    await message.reply_text("**✅ Aᴜᴛʜᴏʀ Sᴀᴠᴇᴅ**")
-
-@Client.on_message(filters.private & filters.command('setartist'))
-async def artist(client, message):
-    if len(message.command) == 1:
-        return await message.reply_text(
-            "**Gɪᴠᴇ Tʜᴇ Aʀᴛɪꜱᴛ\n\nExᴀᴍᴩʟᴇ:- /setartist @Animes_Cruise**")
-    artist = message.text.split(" ", 1)[1]
-    await codeflixbots.set_artist(message.from_user.id, artist=artist)
-    await message.reply_text("**✅ Aʀᴛɪꜱᴛ Sᴀᴠᴇᴅ**")
-
-@Client.on_message(filters.private & filters.command('setaudio'))
-async def audio(client, message):
-    if len(message.command) == 1:
-        return await message.reply_text(
-            "**Gɪᴠᴇ T� MotorHᴇ Aᴜᴅɪᴏ Tɪᴛʟᴇ\n\nExᴀᴍᴩʟᴇ:- /setaudio @Animes_Cruise**")
-    audio = message.text.split(" ", 1)[1]
-    await codeflixbots.set_audio(message.from_user.id, audio=audio)
-    await message.reply_text("**✅ Aᴜᴅɪᴏ Sᴀᴠᴇᴅ**")
-
-@Client.on_message(filters.private & filters.command('setsubtitle'))
-async def subtitle(client, message):
-    if len(message.command) == 1:
-        return await message.reply_text(
-            "**Gɪᴠᴇ Tʜᴇ Sᴜʙᴛɪᴛʟᴇ Tɪᴛʟᴇ\n\nExᴀᴍᴩʟᴇ:- /setsubtitle @Animes_Cruise**")
-    subtitle = message.text.split(" ", 1)[1]
-    await codeflixbots.set_subtitle(message.from_user.id, subtitle=subtitle)
-    await message.reply_text("**✅ Sᴜʙᴛɪᴛʟᴇ Sᴀᴠᴇᴅ**")
-
-@Client.on_message(filters.private & filters.command('setvideo'))
-async def video(client, message):
-    if len(message.command) == 1:
-        return await message.reply_text(
-            "**Gɪᴠᴇ Tʜᴇ Vɪᴅᴇᴏ Tɪᴛʟᴇ\n\nExᴀᴍᴩʟᴇ:- /setvideo Encoded by @Animes_Cruise**")
-    video = message.text.split(" ", 1)[1]
-    await codeflixbots.set_video(message.from_user.id, video=video)
-    await message.reply_text("**✅ Vɪᴅᴇᴏ Sᴀᴠᴇᴅ**")
-
-@Client.on_message(filters.command("debug_metadata") & filters.private)
-async def debug_metadata(client, message):
-    user_id = message.from_user.id
-    try:
-        metadata_enabled = await codeflixbots.get_metadata(user_id)
-        metadata = {
-            'title': await codeflixbots.get_title(user_id),
-            'artist': await codeflixbots.get_artist(user_id),
-            'author': await codeflixbots.get_author(user_id),
-            'video_title': await codeflixbots.get_video(user_id),
-            'audio_title': await codeflixbots.get_audio(user_id),
-            'subtitle': await codeflixbots.get_subtitle(user_id)
-        }
-        response = f"Metadata Enabled: {metadata_enabled}\nMetadata Values:\n"
-        for key, value in metadata.items():
-            response += f"{key}: {value}\n"
-        await message.reply_text(response)
-    except Exception as e:
-        logger.error(f"Error debugging metadata for user {user_id}: {e}")
-        await message.reply_text(f"Error: {str(e)}")
-
-
-    
