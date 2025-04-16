@@ -22,7 +22,7 @@ class Database:
         except Exception as e:
             logging.error(f"Failed to connect to async MongoDB: {e}")
             raise e
-        
+
         try:
             obito.client = MongoClient(uri)
             logging.info("Successfully connected to sync MongoDB")
@@ -51,7 +51,8 @@ class Database:
                     "subtitle": None,
                     "telegram_handle": None,
                     "upscale_scale": "2:2",
-                    "exthum_timestamp": None
+                    "exthum_timestamp": None,
+                    "custom_suffix": None  # Add custom_suffix to migration
                 }}
             )
             logging.info(f"Reset metadata for {result.modified_count} users")
@@ -70,6 +71,7 @@ class Database:
             telegram_handle=None,
             upscale_scale="2:2",
             exthum_timestamp=None,
+            custom_suffix=None,  # Add custom_suffix to new user
             uploads=[],
             ban_status=dict(
                 is_banned=False,
@@ -396,6 +398,25 @@ class Database:
             logging.error(f"Error getting exthum_timestamp for user {user_id}: {e}")
             return None
 
+    async def set_custom_suffix(obito, user_id: int, suffix: str):
+        try:
+            suffix = suffix.strip() if suffix else None
+            await obito.col.update_one(
+                {"_id": user_id},
+                {"$set": {"custom_suffix": suffix}}
+            )
+            logging.info(f"Set custom_suffix '{suffix}' for user {user_id}")
+        except Exception as e:
+            logging.error(f"Error setting custom_suffix for user {user_id}: {e}")
+
+    async def get_custom_suffix(obito, user_id: int):
+        try:
+            user = await obito.col.find_one({"_id": user_id})
+            return user.get("custom_suffix", None) if user else None
+        except Exception as e:
+            logging.error(f"Error getting custom_suffix for user {user_id}: {e}")
+            return None
+
     async def send_to_dump_channel(obito, client, file_path: str, caption: str = None) -> bool:
         if not obito.dump_channel:
             logging.warning("DUMP_CHANNEL not configured")
@@ -415,12 +436,8 @@ class Database:
             logging.error(f"Error sending file to DUMP_CHANNEL: {str(e)}")
             return False
 
-    # New method for /clear
     async def clear_user_tasks(obito, user_id: int) -> bool:
-        """
-        Clears task-related data (uploads) for the user in the database.
-        """
-        for attempt in range(3):  # Retry for robustness
+        for attempt in range(3):
             try:
                 result = await obito.col.update_one(
                     {"_id": int(user_id)},
@@ -433,22 +450,18 @@ class Database:
                 logging.error(f"Error clearing tasks for user {user_id}, attempt {attempt+1}: {e}")
                 if attempt < 2:
                     await asyncio.sleep(1)
-        return False
+                return False
 
-    # New helper method for /upscale
     async def get_upscale_factor(obito, user_id: int) -> float:
-        """
-        Converts upscale_scale (e.g., '2:2') to a float for /upscale command.
-        """
         try:
             scale = await obito.get_upscale_scale(user_id)
             if not scale or ":" not in scale:
                 logging.warning(f"Invalid upscale_scale '{scale}' for user {user_id}, using default")
                 return 2.0
             factor = float(scale.split(":")[0])
-            return max(1.0, min(factor, 5.0))  # Clamp between 1x and 5x
+            return max(1.0, min(factor, 5.0))
         except (ValueError, AttributeError, Exception) as e:
             logging.error(f"Error parsing upscale factor for user {user_id}: {e}")
-            return 2.0  # Default to 2x
+            return 2.0
 
 codeflixbots = Database()
