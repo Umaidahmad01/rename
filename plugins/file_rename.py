@@ -22,9 +22,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-user_tasks = {}
-user_renaming_operations = {}
-
 METADATA_PATTERNS = [
     (re.compile(r'S(\d+)(?:E|EP|_|\s)(\d+)', re.IGNORECASE), ('season', 'episode')),
     (re.compile(r'Season\s*(\d+)\s*Episode\s*(\d+)', re.IGNORECASE), ('season', 'episode')),
@@ -46,19 +43,6 @@ QUALITY_PATTERNS = [
     (re.compile(r'\b(4kX264|4kX265|X264|X265|X26|DD\s*5\.1)\b', re.IGNORECASE), lambda m: "X264" if m.group(1).upper() == "X26" else m.group(1).upper()),
     (re.compile(r'\[(\d{3,4}[pi])\]', re.IGNORECASE), lambda m: m.group(1).upper())
 ]
-
-def sanitize_filename(filename, keep_extension=True, max_length=200):
-    if not filename:
-        return "unnamed_file"
-    name, ext = os.path.splitext(filename) if keep_extension else (filename, "")
-    # Only truncate to max_length, preserve all characters including special ones
-    result = f"{name}{ext}"[:max_length]
-    result = result.strip('.')
-    if not result:
-        result = "unnamed_file"
-    if keep_extension and ext and not result.endswith(ext):
-        result = f"{result}{ext}"
-    return result
 
 def extract_metadata(input_text, rename_mode=None):
     if not input_text:
@@ -148,7 +132,6 @@ async def process_thumbnail(thumb_path):
 def sanitize_metadata_value(value):
     if not value:
         return None
-    # Preserve special characters, only remove control characters
     value = re.sub(r'[\x00-\x1F\x7F]', '', value).strip()
     return value[:255] if value else None
 
@@ -281,20 +264,6 @@ async def process_file(client, message):
     user_id = message.from_user.id
     file_id = (message.document or message.video or message.audio).file_id
 
-    if user_id not in user_tasks:
-        user_tasks[user_id] = []
-    if user_id not in user_renaming_operations:
-        user_renaming_operations[user_id] = set()
-
-    if file_id in user_renaming_operations[user_id]:
-        logger.info(f"File {file_id} already being processed for user {user_id}, skipping")
-        return
-
-    user_renaming_operations[user_id].add(file_id)
-    download_path = None
-    metadata_path = None
-    thumb_path = None
-
     async def attempt_operation(operation, description, max_retries=3):
         for attempt in range(max_retries):
             try:
@@ -309,6 +278,10 @@ async def process_file(client, message):
                 logger.error(f"Error in {description} (attempt {attempt + 1}): {e}")
             await asyncio.sleep(1)
         return None
+
+    download_path = None
+    metadata_path = None
+    thumb_path = None
 
     try:
         format_template = await attempt_operation(
@@ -405,9 +378,12 @@ async def process_file(client, message):
             new_filename = f"[AS] [S01-E15] Unknown_Title [720P ⌯ Sub] @{custom_suffix}"
 
         full_filename = f"{new_filename}{target_ext}"
-        new_filename = sanitize_filename(full_filename)
-        download_path = f"downloads/{user_id}/{new_filename}"
-        metadata_path = f"metadata/{user_id}/{new_filename}"
+        # Minimal check for max filename length (Telegram/Windows limit)
+        if len(full_filename) > 255:
+            full_filename = full_filename[:255 - len(target_ext)] + target_ext
+
+        download_path = f"downloads/{user_id}/{full_filename}"
+        metadata_path = f"metadata/{user_id}/{full_filename}"
 
         os.makedirs(os.path.dirname(download_path), exist_ok=True)
         os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
@@ -419,88 +395,82 @@ async def process_file(client, message):
         if not msg:
             return
 
-        async def process_single_file():
-            nonlocal download_path, metadata_path, thumb_path
-            try:
-                file_path = await attempt_operation(
-                    lambda: client.download_media(
-                        message,
-                        file_name=download_path,
-                        progress=progress_for_pyrogram,
-                        progress_args=("Downloading...", msg, time.time())
-                    ),
-                    "download media"
+        # Direct processing without task creation
+        try:
+            file_path = await attempt_operation(
+                lambda: client.download_media(
+                    message,
+                    file_name=download_path,
+                    progress=progress_for_pyrogram,
+                    progress_args=("Downloading...", msg, time.time())
+                ),
+                "download media"
+            )
+            if not file_path or not os.path.exists(file_path):
+                logger.error(f"Download failed for {full_filename}")
+                await msg.edit("Error: Download failed.")
+                return
+
+            metadata_enabled = await attempt_operation(
+                lambda: codeflixbots.get_metadata(user_id),
+                "get metadata setting"
+            ) == "On"
+            if metadata_enabled:
+                await msg.edit("**Processing metadata...**")
+                if await add_metadata(file_path, metadata_path, user_id):
+                    if os.path.exists(metadata_path):
+                        os.remove(file_path)
+                        file_path = metadata_path
+                        logger.info(f"Using metadata file: {metadata_path}")
+                    else:
+                        logger.warning(f"Metadata file {metadata_path} not found, using {file_path}")
+
+            await msg.edit("**Preparing upload...**")
+            caption = f"**{full_filename}**"
+            thumb = await attempt_operation(
+                lambda: codeflixbots.get_thumbnail(user_id),
+                "get thumbnail"
+            )
+            thumb_path = None
+
+            if thumb:
+                thumb_path = await attempt_operation(
+                    lambda: client.download_media(thumb),
+                    "download custom thumbnail"
                 )
-                if not file_path or not os.path.exists(file_path):
-                    logger.error(f"Download failed for {new_filename}")
-                    await msg.edit("Error: Download failed.")
-                    return
-
-                metadata_enabled = await attempt_operation(
-                    lambda: codeflixbots.get_metadata(user_id),
-                    "get metadata setting"
-                ) == "On"
-                if metadata_enabled:
-                    await msg.edit("**Processing metadata...**")
-                    if await add_metadata(file_path, metadata_path, user_id):
-                        if os.path.exists(metadata_path):
-                            os.remove(file_path)
-                            file_path = metadata_path
-                            logger.info(f"Using metadata file: {metadata_path}")
-                        else:
-                            logger.warning(f"Metadata file {metadata_path} not found, using {file_path}")
-
-                await msg.edit("**Preparing upload...**")
-                caption = f"**{new_filename}**"
-                thumb = await attempt_operation(
-                    lambda: codeflixbots.get_thumbnail(user_id),
-                    "get thumbnail"
+            elif media_type == "video" and message.video and message.video.thumbs:
+                thumb_path = await attempt_operation(
+                    lambda: client.download_media(message.video.thumbs[0].file_id),
+                    "download video thumbnail"
                 )
-                thumb_path = None
+            
+            thumb_path = await process_thumbnail(thumb_path)
 
-                if thumb:
-                    thumb_path = await attempt_operation(
-                        lambda: client.download_media(thumb),
-                        "download custom thumbnail"
-                    )
-                elif media_type == "video" and message.video and message.video.thumbs:
-                    thumb_path = await attempt_operation(
-                        lambda: client.download_media(message.video.thumbs[0].file_id),
-                        "download video thumbnail"
-                    )
-                
-                thumb_path = await process_thumbnail(thumb_path)
-
-                sent_message = await attempt_operation(
-                    lambda: client.send_document(
-                        chat_id=message.chat.id,
-                        document=file_path,
-                        file_name=new_filename,
-                        caption=caption,
-                        thumb=thumb_path,
-                        progress=progress_for_pyrogram,
-                        progress_args=("Uploading...", msg, time.time())
-                    ),
-                    "upload document"
-                )
-                if sent_message:
-                    await msg.delete()
-                    asyncio.create_task(send_to_dump_channel(client, sent_message, user_id))
-                else:
-                    await msg.edit("Error: Upload failed.")
-            except Exception as e:
-                logger.error(f"Processing failed for user {user_id}: {e}")
-                await msg.edit(f"Error: Processing failed: {e}")
-            finally:
-                await cleanup_files(download_path, metadata_path, thumb_path)
-
-        task = asyncio.create_task(process_single_file())
-        user_tasks[user_id].append(task)
+            sent_message = await attempt_operation(
+                lambda: client.send_document(
+                    chat_id=message.chat.id,
+                    document=file_path,
+                    file_name=full_filename,
+                    caption=caption,
+                    thumb=thumb_path,
+                    progress=progress_for_pyrogram,
+                    progress_args=("Uploading...", msg, time.time())
+                ),
+                "upload document"
+            )
+            if sent_message:
+                await msg.delete()
+                await send_to_dump_channel(client, sent_message, user_id)
+            else:
+                await msg.edit("Error: Upload failed.")
+        except Exception as e:
+            logger.error(f"Processing failed for user {user_id}: {e}")
+            await msg.edit(f"Error: Processing failed: {e}")
+        finally:
+            await cleanup_files(download_path, metadata_path, thumb_path)
 
     except Exception as e:
         logger.error(f"Processing error for user {user_id}: {e}")
         await message.reply_text(f"Error: {str(e)}")
-    finally:
-        user_renaming_operations[user_id].discard(file_id)
-        user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
 
+            
