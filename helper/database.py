@@ -22,7 +22,7 @@ class Database:
         except Exception as e:
             logging.error(f"Failed to connect to async MongoDB: {e}")
             raise e
-
+        
         try:
             obito.client = MongoClient(uri)
             logging.info("Successfully connected to sync MongoDB")
@@ -42,7 +42,7 @@ class Database:
             result = await obito.col.update_many(
                 {},
                 {"$set": {
-                    "metadata": False,
+                    "metadata": "Off",  # Default to "Off" for consistency
                     "title": None,
                     "artist": None,
                     "author": None,
@@ -52,7 +52,7 @@ class Database:
                     "telegram_handle": None,
                     "upscale_scale": "2:2",
                     "exthum_timestamp": None,
-                    "custom_suffix": None  # Add custom_suffix to migration
+                    "custom_suffix": None
                 }}
             )
             logging.info(f"Reset metadata for {result.modified_count} users")
@@ -65,13 +65,13 @@ class Database:
             join_date=datetime.date.today().isoformat(),
             file_id=None,
             caption=None,
-            metadata=False,
+            metadata="Off",  # Default to "Off"
             metadata_code="Telegram : @Codeflix_Bots",
             format_template=None,
             telegram_handle=None,
             upscale_scale="2:2",
             exthum_timestamp=None,
-            custom_suffix=None,  # Add custom_suffix to new user
+            custom_suffix=None,
             uploads=[],
             ban_status=dict(
                 is_banned=False,
@@ -184,14 +184,14 @@ class Database:
     async def get_metadata(obito, user_id):
         try:
             user = await obito.col.find_one({'_id': int(user_id)})
-            return user.get('metadata', False) if user else False
+            return user.get('metadata', "Off") if user else "Off"
         except Exception as e:
             logging.error(f"Error getting metadata for user {user_id}: {e}")
-            return False
+            return "Off"
 
     async def set_metadata(obito, user_id, metadata):
         try:
-            await obito.col.update_one({'_id': int(user_id)}, {'$set': {'metadata': bool(metadata)}})
+            await obito.col.update_one({'_id': int(user_id)}, {'$set': {'metadata': metadata}})
             logging.info(f"Set metadata to {metadata} for user {user_id}")
         except Exception as e:
             logging.error(f"Error setting metadata for user {user_id}: {e}")
