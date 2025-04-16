@@ -42,7 +42,7 @@ class Database:
             result = await obito.col.update_many(
                 {},
                 {"$set": {
-                    "metadata": "Off",  # Default to "Off" for consistency
+                    "metadata": "Off",
                     "title": None,
                     "artist": None,
                     "author": None,
@@ -65,7 +65,7 @@ class Database:
             join_date=datetime.date.today().isoformat(),
             file_id=None,
             caption=None,
-            metadata="Off",  # Default to "Off"
+            metadata="Off",
             metadata_code="Telegram : @Codeflix_Bots",
             format_template=None,
             telegram_handle=None,
