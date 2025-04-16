@@ -6,10 +6,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
 from PIL import Image
-import cv2
-import zipfile
 import ffmpeg
-import PyPDF2
 from config import Config
 from database import codeflixbots
 
