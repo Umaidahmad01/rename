@@ -52,7 +52,8 @@ class Database:
                     "telegram_handle": None,
                     "upscale_scale": "2:2",
                     "exthum_timestamp": None,
-                    "custom_suffix": None
+                    "custom_suffix": None,
+                    "media_type": None
                 }}
             )
             logging.info(f"Reset metadata for {result.modified_count} users")
@@ -72,6 +73,7 @@ class Database:
             upscale_scale="2:2",
             exthum_timestamp=None,
             custom_suffix=None,
+            media_type=None,
             uploads=[],
             ban_status=dict(
                 is_banned=False,
@@ -170,15 +172,19 @@ class Database:
             await obito.col.update_one(
                 {"_id": int(id)}, {"$set": {"media_type": media_type}}
             )
+            logging.info(f"Successfully set media preference to {media_type} for user {id}")
         except Exception as e:
-            logging.error(f"Error setting media preference for user {id}: {e}")
+            logging.error(f"Failed to set media preference for user {id}: {e}")
+            raise e
 
     async def get_media_preference(obito, id):
         try:
             user = await obito.col.find_one({"_id": int(id)})
-            return user.get("media_type", None) if user else None
+            media_type = user.get("media_type", None) if user else None
+            logging.info(f"Retrieved media preference: {media_type} for user {id}")
+            return media_type
         except Exception as e:
-            logging.error(f"Error getting media preference for user {id}: {e}")
+            logging.error(f"Failed to get media preference for user {id}: {e}")
             return None
 
     async def get_metadata(obito, user_id):
@@ -208,7 +214,7 @@ class Database:
         try:
             await obito.col.update_one({'_id': int(user_id)}, {'$set': {'title': title}})
         except Exception as e:
-            logging.error(f"Error setting title for user {user_id}: {e}")
+            logging.error(f"Error setting title for user { медиа_id}: {e}")
 
     async def get_author(obito, user_id):
         try:
