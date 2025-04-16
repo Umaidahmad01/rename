@@ -266,7 +266,7 @@ async def cb_handler(client, query: CallbackQuery):
                 [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close"), InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="help")]
             ])
         )
-    elif data == "metadatax":
+    elif data == "metadata":
         await query.message.edit_caption(
             caption=Txt.SEND_METADATA,
             reply_markup=InlineKeyboardMarkup([
@@ -330,7 +330,6 @@ async def clear_tasks(client, message):
     except Exception as e:
         logger.error(f"Error clearing tasks for user {user_id}: {e}")
         await message.reply_text(f"Failed to clear tasks: {str(e)}")
-
 
 @Client.on_message(filters.command("setmedia") & filters.private)
 async def set_media(client, message):
@@ -427,4 +426,4 @@ async def extract_thumbnail(client, message):
     except Exception as e:
         logger.error(f"Error extracting thumbnail for user {user_id}: {e}")
         await msg.edit(f"Error extracting thumbnail: {str(e)}")
-
+        
