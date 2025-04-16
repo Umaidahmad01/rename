@@ -45,30 +45,6 @@ class Database:
             logger.error(f"Error getting format_template for user {user_id}: {e}")
             return None
 
-    async def set_custom_suffix(self, user_id: int, suffix: str) -> bool:
-        try:
-            suffix = suffix.strip() if suffix else None
-            await self.users.update_one(
-                {'_id': user_id},
-                {'$set': {'custom_suffix': suffix}},
-                upsert=True
-            )
-            logger.info(f"Set custom_suffix for user {user_id}: {suffix}")
-            return True
-        except Exception as e:
-            logger.error(f"Error setting custom_suffix for user {user_id}: {e}")
-            return False
-
-    async def get_custom_suffix(self, user_id: int) -> str:
-        try:
-            user = await self.users.find_one({'_id': user_id})
-            suffix = user.get('custom_suffix') if user else None
-            logger.info(f"Retrieved custom_suffix for user {user_id}: {suffix}")
-            return suffix
-        except Exception as e:
-            logger.error(f"Error getting custom_suffix for user {user_id}: {e}")
-            return None
-
     async def set_metadata_field(self, user_id: int, field: str, value: str) -> bool:
         try:
             await self.users.update_one(
