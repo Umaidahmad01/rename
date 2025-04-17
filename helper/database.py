@@ -1,7 +1,7 @@
 import logging
 import asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo.errors import ConnectionFailure, OperationFailure
+from pymongo.errors import ConnectionFailure
 from config import Config
 
 logging.basicConfig(
@@ -29,27 +29,27 @@ class Database:
     async def add_user(obito, client, message):
         user_id = message.from_user.id
         try:
-            async with asyncio.timeout(5):
-                user = await obito.users.find_one({"user_id": user_id})
-                if not user:
-                    await obito.users.insert_one({
-                        "user_id": user_id,
-                        "rename_mode": "filename",
-                        "custom_suffix": None,
-                        "format_template": None,
-                        "metadata_enabled": "Off",
-                        "title": None,
-                        "artist": None,
-                        "author": None,
-                        "video_title": None,
-                        "audio_title": None,
-                        "subtitle": None,
-                        "caption": None,
-                        "thumbnail": None
-                    })
-                    logger.info(f"Added user {user_id} to database")
-                else:
-                    logger.debug(f"User {user_id} already exists")
+            user = await asyncio.wait_for(obito.users.find_one({"user_id": user_id}), timeout=5)
+            if not user:
+                await asyncio.wait_for(obito.users.insert_one({
+                    "user_id": user_id,
+                    "rename_mode": "filename",
+                    "custom_suffix": None,
+                    "format_template": None,
+                    "metadata_enabled": "Off",
+                    "convert_to_mkv": False,
+                    "title": None,
+                    "artist": None,
+                    "author": None,
+                    "video_title": None,
+                    "audio_title": None,
+                    "subtitle": None,
+                    "caption": None,
+                    "thumbnail": None
+                }), timeout=5)
+                logger.info(f"Added user {user_id} to database")
+            else:
+                logger.debug(f"User {user_id} already exists")
         except asyncio.TimeoutError:
             logger.error(f"Timeout adding user {user_id}")
         except Exception as e:
@@ -59,14 +59,13 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    await obito.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"rename_mode": rename_mode}},
-                        upsert=True
-                    )
-                    logger.info(f"Set rename_mode '{rename_mode}' for user {user_id}")
-                    return
+                await asyncio.wait_for(obito.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"rename_mode": rename_mode}},
+                    upsert=True
+                ), timeout=5)
+                logger.info(f"Set rename_mode '{rename_mode}' for user {user_id}")
+                return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting rename_mode for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -83,9 +82,8 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    user = await obito.users.find_one({"user_id": user_id})
-                    return user.get("rename_mode", "filename") if user else "filename"
+                user = await asyncio.wait_for(obito.users.find_one({"user_id": user_id}), timeout=5)
+                return user.get("rename_mode", "filename") if user else "filename"
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting rename_mode for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -103,14 +101,13 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    await obito.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"custom_suffix": suffix}},
-                        upsert=True
-                    )
-                    logger.info(f"Set custom_suffix '{suffix}' for user {user_id}")
-                    return
+                await asyncio.wait_for(obito.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"custom_suffix": suffix}},
+                    upsert=True
+                ), timeout=5)
+                logger.info(f"Set custom_suffix '{suffix}' for user {user_id}")
+                return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting custom_suffix for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -127,9 +124,8 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    user = await obito.users.find_one({"user_id": user_id})
-                    return user.get("custom_suffix") if user else None
+                user = await asyncio.wait_for(obito.users.find_one({"user_id": user_id}), timeout=5)
+                return user.get("custom_suffix") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting custom_suffix for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -147,14 +143,13 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    await obito.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"format_template": template}},
-                        upsert=True
-                    )
-                    logger.info(f"Set format_template '{template}' for user {user_id}")
-                    return
+                await asyncio.wait_for(obito.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"format_template": template}},
+                    upsert=True
+                ), timeout=5)
+                logger.info(f"Set format_template '{template}' for user {user_id}")
+                return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting format_template for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -171,9 +166,8 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    user = await obito.users.find_one({"user_id": user_id})
-                    return user.get("format_template") if user else None
+                user = await asyncio.wait_for(obito.users.find_one({"user_id": user_id}), timeout=5)
+                return user.get("format_template") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting format_template for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -191,14 +185,13 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    await obito.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"metadata_enabled": status}},
-                        upsert=True
-                    )
-                    logger.info(f"Set metadata_enabled '{status}' for user {user_id}")
-                    return
+                await asyncio.wait_for(obito.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"metadata_enabled": status}},
+                    upsert=True
+                ), timeout=5)
+                logger.info(f"Set metadata_enabled '{status}' for user {user_id}")
+                return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting metadata_enabled for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -215,9 +208,8 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    user = await obito.users.find_one({"user_id": user_id})
-                    return user.get("metadata_enabled", "Off") if user else "Off"
+                user = await asyncio.wait_for(obito.users.find_one({"user_id": user_id}), timeout=5)
+                return user.get("metadata_enabled", "Off") if user else "Off"
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting metadata_enabled for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -231,18 +223,59 @@ class Database:
         logger.error(f"Failed to get metadata_enabled for user {user_id} after {max_retries} attempts")
         return "Off"
 
+    async def set_convert_to_mkv(obito, user_id: int, status: bool):
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                await asyncio.wait_for(obito.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"convert_to_mkv": status}},
+                    upsert=True
+                ), timeout=5)
+                logger.info(f"Set convert_to_mkv '{status}' for user {user_id}")
+                return
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout setting convert_to_mkv for user {user_id} (attempt {attempt+1}/{max_retries})")
+            except ConnectionFailure:
+                logger.warning(f"Connection error setting convert_to_mkv for user {user_id} (attempt {attempt+1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"Error setting convert_to_mkv for user {user_id}: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
+        logger.error(f"Failed to set convert_to_mkv for user {user_id} after {max_retries} attempts")
+
+    async def get_convert_to_mkv(obito, user_id: int) -> bool:
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                user = await asyncio.wait_for(obito.users.find_one({"user_id": user_id}), timeout=5)
+                return user.get("convert_to_mkv", False) if user else False
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout getting convert_to_mkv for user {user_id} (attempt {attempt+1}/{max_retries})")
+            except ConnectionFailure:
+                logger.warning(f"Connection error getting convert_to_mkv for user {user_id} (attempt {attempt+1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"Error getting convert_to_mkv for user {user_id}: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
+        logger.error(f"Failed to get convert_to_mkv for user {user_id} after {max_retries} attempts")
+        return False
+
     async def set_title(obito, user_id: int, title: str):
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    await obito.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"title": title}},
-                        upsert=True
-                    )
-                    logger.info(f"Set title '{title}' for user {user_id}")
-                    return
+                await asyncio.wait_for(obito.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"title": title}},
+                    upsert=True
+                ), timeout=5)
+                logger.info(f"Set title '{title}' for user {user_id}")
+                return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting title for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -259,9 +292,8 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    user = await obito.users.find_one({"user_id": user_id})
-                    return user.get("title") if user else None
+                user = await asyncio.wait_for(obito.users.find_one({"user_id": user_id}), timeout=5)
+                return user.get("title") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting title for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -279,14 +311,13 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    await obito.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"artist": artist}},
-                        upsert=True
-                    )
-                    logger.info(f"Set artist '{artist}' for user {user_id}")
-                    return
+                await asyncio.wait_for(obito.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"artist": artist}},
+                    upsert=True
+                ), timeout=5)
+                logger.info(f"Set artist '{artist}' for user {user_id}")
+                return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting artist for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -303,9 +334,8 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    user = await obito.users.find_one({"user_id": user_id})
-                    return user.get("artist") if user else None
+                user = await asyncio.wait_for(obito.users.find_one({"user_id": user_id}), timeout=5)
+                return user.get("artist") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting artist for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -323,14 +353,13 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    await obito.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"author": author}},
-                        upsert=True
-                    )
-                    logger.info(f"Set author '{author}' for user {user_id}")
-                    return
+                await asyncio.wait_for(obito.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"author": author}},
+                    upsert=True
+                ), timeout=5)
+                logger.info(f"Set author '{author}' for user {user_id}")
+                return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting author for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -347,9 +376,8 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    user = await obito.users.find_one({"user_id": user_id})
-                    return user.get("author") if user else None
+                user = await asyncio.wait_for(obito.users.find_one({"user_id": user_id}), timeout=5)
+                return user.get("author") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting author for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -367,14 +395,13 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    await obito.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"video_title": video_title}},
-                        upsert=True
-                    )
-                    logger.info(f"Set video_title '{video_title}' for user {user_id}")
-                    return
+                await asyncio.wait_for(obito.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"video_title": video_title}},
+                    upsert=True
+                ), timeout=5)
+                logger.info(f"Set video_title '{video_title}' for user {user_id}")
+                return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting video_title for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -391,9 +418,8 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    user = await obito.users.find_one({"user_id": user_id})
-                    return user.get("video_title") if user else None
+                user = await asyncio.wait_for(obito.users.find_one({"user_id": user_id}), timeout=5)
+                return user.get("video_title") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting video_title for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -411,14 +437,13 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    await obito.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"audio_title": audio_title}},
-                        upsert=True
-                    )
-                    logger.info(f"Set audio_title '{audio_title}' for user {user_id}")
-                    return
+                await asyncio.wait_for(obito.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"audio_title": audio_title}},
+                    upsert=True
+                ), timeout=5)
+                logger.info(f"Set audio_title '{audio_title}' for user {user_id}")
+                return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting audio_title for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -435,9 +460,8 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    user = await obito.users.find_one({"user_id": user_id})
-                    return user.get("audio_title") if user else None
+                user = await asyncio.wait_for(obito.users.find_one({"user_id": user_id}), timeout=5)
+                return user.get("audio_title") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting audio_title for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -455,14 +479,13 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    await obito.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"subtitle": subtitle}},
-                        upsert=True
-                    )
-                    logger.info(f"Set subtitle '{subtitle}' for user {user_id}")
-                    return
+                await asyncio.wait_for(obito.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"subtitle": subtitle}},
+                    upsert=True
+                ), timeout=5)
+                logger.info(f"Set subtitle '{subtitle}' for user {user_id}")
+                return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting subtitle for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -479,9 +502,8 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    user = await obito.users.find_one({"user_id": user_id})
-                    return user.get("subtitle") if user else None
+                user = await asyncio.wait_for(obito.users.find_one({"user_id": user_id}), timeout=5)
+                return user.get("subtitle") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting subtitle for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -499,14 +521,13 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    await obito.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"caption": caption}},
-                        upsert=True
-                    )
-                    logger.info(f"Set caption '{caption}' for user {user_id}")
-                    return
+                await asyncio.wait_for(obito.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"caption": caption}},
+                    upsert=True
+                ), timeout=5)
+                logger.info(f"Set caption '{caption}' for user {user_id}")
+                return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting caption for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -523,9 +544,8 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    user = await obito.users.find_one({"user_id": user_id})
-                    return user.get("caption") if user else None
+                user = await asyncio.wait_for(obito.users.find_one({"user_id": user_id}), timeout=5)
+                return user.get("caption") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting caption for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -543,14 +563,13 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    await obito.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"thumbnail": thumbnail}},
-                        upsert=True
-                    )
-                    logger.info(f"Set thumbnail for user {user_id}")
-                    return
+                await asyncio.wait_for(obito.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"thumbnail": thumbnail}},
+                    upsert=True
+                ), timeout=5)
+                logger.info(f"Set thumbnail for user {user_id}")
+                return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting thumbnail for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -567,9 +586,8 @@ class Database:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                async with asyncio.timeout(5):
-                    user = await obito.users.find_one({"user_id": user_id})
-                    return user.get("thumbnail") if user else None
+                user = await asyncio.wait_for(obito.users.find_one({"user_id": user_id}), timeout=5)
+                return user.get("thumbnail") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting thumbnail for user {user_id} (attempt {attempt+1}/{max_retries})")
             except ConnectionFailure:
@@ -583,18 +601,4 @@ class Database:
         logger.error(f"Failed to get thumbnail for user {user_id} after {max_retries} attempts")
         return None
 
-    async def clear_stale_tasks(obito, user_id: int):
-        try:
-            async with asyncio.timeout(5):
-                await obito.users.update_one(
-                    {"user_id": user_id},
-                    {"$set": {"tasks": []}},
-                    upsert=True
-                )
-                logger.info(f"Cleared stale tasks for user {user_id}")
-        except asyncio.TimeoutError:
-            logger.warning(f"Timeout clearing stale tasks for user {user_id}")
-        except Exception as e:
-            logger.error(f"Error clearing stale tasks for user {user_id}: {e}")
-
-codeflixbots = Database() 
+codeflixbots = Database()
