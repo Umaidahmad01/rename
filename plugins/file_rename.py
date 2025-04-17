@@ -1,335 +1,495 @@
-import logging
 import os
-import asyncio
 import re
-from pyrogram import Client, filters
-from pyrogram.types import Message
-from pyrogram.errors import FloodWait
+import time
+import shutil
+import asyncio
+import logging
+from datetime import datetime
+from collections import defaultdict
 from PIL import Image
-import ffmpeg
-from config import Config
+from pyrogram import Client, filters
+from pyrogram.errors import FloodWait, MessageNotModified, ChatAdminRequired
+from pyrogram.types import Message
+from hachoir.metadata import extractMetadata
+from hachoir.parser import createParser
+from plugins.antinsfw import check_anti_nsfw
+from helper.utils import progress_for_pyrogram, humanbytes, send_log
 from helper.database import codeflixbots
+from config import Config
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
+# Per-user locks and global semaphore for concurrency
+user_locks = defaultdict(asyncio.Lock)
+global_semaphore = asyncio.Semaphore(50)  # Limit to 50 concurrent operations
+user_tasks = defaultdict(list)  # Track tasks per user
+
+# Patterns for extracting volume, chapter, season, episode
 METADATA_PATTERNS = [
-    (r'S(\d+)(?:E|EP|_|\s)(\d+)', ('season', 'episode')),
-    (r'Season\s*(\d+)\s*Episode\s*(\d+)', ('season', 'episode')),
-    (r'\[S(\d+)\]\[E(\d+)\]', ('season', 'episode')),
-    (r'S(\d+)[^\d]*(\d+)', ('season', 'episode')),
-    (r'(?:Vol|Volume|V)\s*(\d+)', ('volume', None)),
-    (r'(?:Ch|Chapter|C)\s*(\d+)', (None, 'chapter')),
-    (r'V(\d+)[^\d]*C(\d+)', ('volume', 'chapter')),
-    (r'Volume\s*(\d+)\s*Chapter\s*(\d+)', ('volume', 'chapter')),
-    (r'(?:E|EP|Episode)\s*(\d+)', (None, 'episode')),
-    (r'\b(\d+)\b', (None, 'episode'))
+    (re.compile(r'(?:Vol|Volume|V)\s*(\d+)', re.IGNORECASE), ('volume', None)),
+    (re.compile(r'(?:Ch|Chapter|C)\s*(\d+)', re.IGNORECASE), (None, 'chapter')),
+    (re.compile(r'V(\d+)[^\d]*C(\d+)', re.IGNORECASE), ('volume', 'chapter')),
+    (re.compile(r'Volume\s*(\d+)\s*Chapter\s*(\d+)', re.IGNORECASE), ('volume', 'chapter')),
+    (re.compile(r'S(\d+)(?:E|EP)(\d+)', re.IGNORECASE), ('season', 'episode')),
+    (re.compile(r'S(\d+)[\s-]*(?:E|EP)(\d+)', re.IGNORECASE), ('season', 'episode')),
+    (re.compile(r'Season\s*(\d+)\s*Episode\s*(\d+)', re.IGNORECASE), ('season', 'episode')),
+    (re.compile(r'\[S(\d+)\]\[E(\d+)\]', re.IGNORECASE), ('season', 'episode')),
+    (re.compile(r'S(\d+)[^\d]*(\d+)', re.IGNORECASE), ('season', 'episode')),
+    (re.compile(r'(?:E|EP|Episode)\s*(\d+)', re.IGNORECASE), (None, 'episode')),
+    (re.compile(r'\b(\d+)\b', re.IGNORECASE), (None, 'episode'))
 ]
 
 QUALITY_PATTERNS = [
-    (r'\b(\d{3,4}[pi])\b', lambda m: m.group(1).upper()),
-    (r'\b(4k|2160p)\b', lambda m: "4K"),
-    (r'\b(2k|1440p)\b', lambda m: "2K"),
-    (r'\b(HDRip|HDTV|WebRip|BluRay)\b', lambda m: m.group(1).upper()),
-    (r'\b(4kX264|4kX265|X264|X265|X26|DD\s*5\.1)\b', lambda m: "X264" if m.group(1).upper() == "X26" else m.group(1).upper()),
-    (r'\[(\d{3,4}[pi])\]', lambda m: m.group(1).upper())
+    (re.compile(r'\b(\d{3,4}[pi])\b', re.IGNORECASE), lambda m: m.group(1).upper()),
+    (re.compile(r'\b(4k|2160p)\b', re.IGNORECASE), lambda m: "4K"),
+    (re.compile(r'\b(2k|1440p)\b', re.IGNORECASE), lambda m: "2K"),
+    (re.compile(r'\b(HDRip|HDTV|WebRip|BluRay)\b', re.IGNORECASE), lambda m: m.group(1).upper()),
+    (re.compile(r'\b(4kX264|4kX265|X264|X265|X26)\b', re.IGNORECASE), lambda m: "X264" if m.group(1).upper() == "X26" else m.group(1).upper()),
+    (re.compile(r'\[(\d{3,4}[pi])\]', re.IGNORECASE), lambda m: m.group(1).upper())
 ]
 
-async def is_authorized(user_id: int) -> bool:
-    return user_id in Config.AUTH_USERS
+def sanitize_filename(filename, keep_extension=True, max_length=255):
+    if not filename:
+        return "unnamed_file"
+    
+    name, ext = os.path.splitext(filename) if keep_extension else (filename, "")
+    invalid_chars = r'[<>:"/\\|?*\x00-\x1F]'
+    clean = re.sub(invalid_chars, '', name)
+    clean = clean.strip()
+    
+    result = f"{clean}{ext}"[:max_length]
+    result = result.strip('.')
+    if not result:
+        result = "unnamed_file"
+    if keep_extension and ext and not result.endswith(ext):
+        result = f"{result}{ext}"
+    return result
 
-async def extract_metadata(input_text, rename_mode=None):
+def extract_metadata(input_text, rename_mode):
     if not input_text:
-        return None, None, "01", "01", "Unknown_Title"
-    input_text = str(input_text)
+        logger.warning(f"No input text for rename_mode {rename_mode}, using defaults")
+        return "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "Unknown_Title"
     
-    title_match = re.match(r'^(.*?)(?:S\d+|Season|E\d+|Episode|\d{3,4}[pi]|WebRip|BluRay|Hin\s*Eng|DD\s*5\.1|\[|$)', input_text, re.IGNORECASE)
-    title = title_match.group(1).strip().replace('.', ' ').title() if title_match else "Unknown_Title"
-    if title:
-        title = re.sub(r'\s+', ' ', title).strip()
-    
-    patterns = [(re.compile(p, re.IGNORECASE), k) for p, k in METADATA_PATTERNS]
-    
-    if rename_mode:
-        for pattern, (key1, key2) in patterns:
-            match = pattern.search(rename_mode)
-            if match:
-                if key1 == 'volume':
-                    volume = match.group(1).zfill(2)
-                    chapter = match.group(2).zfill(2) if key2 == 'chapter' and len(match.groups()) >= 2 else "01"
-                    return volume, chapter, "01", "01", title
-                elif key1 == 'season':
-                    season = match.group(1).zfill(2)
-                    episode = match.group(2).zfill(2) if key2 == 'episode' and len(match.groups()) >= 2 else "01"
-                    return None, None, season, episode, title
-                elif key2 == 'chapter':
-                    chapter = match.group(1).zfill(2)
-                    return None, chapter, "01", "01", title
-                elif key2 == 'episode':
-                    episode = match.group(1).zfill(2)
-                    return None, None, "01", episode, title
+    input_text = str(input_text).strip()
+    if not input_text:
+        logger.warning(f"Input text is empty after stripping for rename_mode {rename_mode}, using defaults")
+        return "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "Unknown_Title"
 
-    for pattern, (key1, key2) in patterns:
+    title = None
+    title_match = re.match(r'^(.*?)(?:S\d+|Season|E\d+|Episode|\d{3,4}[pi]|\[|$)', input_text, re.IGNORECASE)
+    if title_match:
+        title = title_match.group(1).strip().replace('.', ' ').title()
+        if not title:
+            title = "Unknown_Title"
+    else:
+        title = "Unknown_Title"
+    
+    for pattern, (key1, key2) in METADATA_PATTERNS:
         match = pattern.search(input_text)
         if match:
             if key1 == 'volume':
                 volume = match.group(1).zfill(2)
-                chapter = match.group(2).zfill(2) if key2 == 'chapter' and len(match.groups()) >= 2 else "01"
-                return volume, chapter, "01", "01", title
+                chapter = match.group(2).zfill(2) if key2 == 'chapter' and len(match.groups()) >= 2 else "UNKNOWN"
+                return volume, chapter, "UNKNOWN", "UNKNOWN", title
             elif key1 == 'season':
                 season = match.group(1).zfill(2)
-                episode = match.group(2).zfill(2) if key2 == 'episode' and len(match.groups()) >= 2 else "01"
-                return None, None, season, episode, title
+                episode = match.group(2).zfill(2) if key2 == 'episode' and len(match.groups()) >= 2 else "UNKNOWN"
+                return "UNKNOWN", "UNKNOWN", season, episode, title
             elif key2 == 'chapter':
                 chapter = match.group(1).zfill(2)
-                return None, chapter, "01", "01", title
+                return "UNKNOWN", chapter, "UNKNOWN", "UNKNOWN", title
             elif key2 == 'episode':
                 episode = match.group(1).zfill(2)
-                return None, None, "01", episode, title
-    return None, None, "01", "01", title
+                return "UNKNOWN", "UNKNOWN", "UNKNOWN", episode, title
+    
+    logger.warning(f"No metadata matched for {rename_mode}: {input_text}, using defaults")
+    return "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", title
 
-async def extract_quality(input_text):
-    if not input_text:
-        return "720P"
-    patterns = [(re.compile(p, re.IGNORECASE), e) for p, e in QUALITY_PATTERNS]
-    for pattern, extractor in patterns:
-        match = pattern.search(input_text)
+def extract_quality(filename):
+    if not filename:
+        logger.warning("No filename provided for quality extraction, returning UNKNOWN")
+        return "UNKNOWN"
+    for pattern, extractor in QUALITY_PATTERNS:
+        match = pattern.search(filename)
         if match:
-            return extractor(match)
-    return "720P"
-
-async def generate_filename(user_id: int, file_type: str, original_name: str) -> str:
-    template = await codeflixbots.get_format_template(user_id)
-    rename_mode = await codeflixbots.get_user_choice(user_id)
-    if not template:
-        template = "[AS] [Vol{volume}-Ch{chapter}] {title} [{quality}]"
-    volume, chapter, season, episode, title = await extract_metadata(original_name, rename_mode)
-    quality = await extract_quality(original_name)
-    
-    title = title or "Unknown_Title"
-    volume = volume or "01"
-    chapter = chapter or "01"
-    season = season or "01"
-    episode = episode or "01"
-    
-    ext = {
-        "video/mp4": ".mp4",
-        "image/png": ".png",
-        "image/jpeg": ".jpg",
-        "application/zip": ".cbz",
-        "application/pdf": ".pdf"
-    }.get(file_type, ".pdf")
-    
-    filename = template.format(
-        volume=volume,
-        chapter=chapter,
-        season=season,
-        episode=episode,
-        title=title,
-        quality=quality
-    ) + ext
-    return filename[:200]
-
-async def apply_metadata(file_path: str, user_id: int):
-    if await codeflixbots.get_metadata_enabled(user_id) != "On":
-        return
-    metadata = {}
-    for field in ["title", "artist", "author"]:
-        value = await codeflixbots.get_metadata_field(user_id, field)
-        if value:
-            metadata[field] = value
-    if not metadata:
-        metadata["title"] = "Animes_Cruise"
-    try:
-        if file_path.endswith(".pdf"):
-            reader = PyPDF2.PdfReader(file_path)
-            writer = PyPDF2.PdfWriter()
-            for page in reader.pages:
-                writer.add_page(page)
-            writer.add_metadata(metadata)
-            temp_path = f"temp_{file_path}"
-            with open(temp_path, "wb") as f:
-                writer.write(f)
-            os.rename(temp_path, file_path)
-            logger.info(f"Applied metadata to {file_path}: {metadata}")
-        elif file_path.endswith(".mp4"):
-            stream = ffmpeg.input(file_path)
-            for key, value in metadata.items():
-                stream = ffmpeg.output(
-                    stream, f"temp_{file_path}",
-                    **{f"metadata:{key}": value},
-                    c="copy"
-                )
-            ffmpeg.run(stream, overwrite_output=True)
-            os.rename(f"temp_{file_path}", file_path)
-            logger.info(f"Applied metadata to {file_path}: {metadata}")
-    except Exception as e:
-        logger.error(f"Error applying metadata to {file_path}: {e}")
-
-async def extract_thumbnail(file_path: str, user_id: int) -> str:
-    timestamp = await codeflixbots.get_exthum_timestamp(user_id) or 1.0
-    thumb_path = f"downloads/thumb_{user_id}.jpg"
-    try:
-        os.makedirs("downloads", exist_ok=True)
-        if file_path.endswith(".cbz"):
-            with zipfile.ZipFile(file_path, 'r') as zf:
-                images = [f for f in zf.namelist() if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-                if images:
-                    with zf.open(images[0]) as img_file:
-                        img = Image.open(img_file)
-                        img.thumbnail((200, 200))
-                        img.save(thumb_path, "JPEG")
-        elif file_path.endswith(".mp4"):
-            cap = cv2.VideoCapture(file_path)
-            cap.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
-            ret, frame = cap.read()
-            if ret:
-                img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                img.thumbnail((200, 200))
-                img.save(thumb_path, "JPEG")
-            cap.release()
-        elif file_path.endswith((".png", ".jpg")):
-            img = Image.open(file_path)
-            img.thumbnail((200, 200))
-            img.save(thumb_path, "JPEG")
-        elif file_path.endswith(".pdf"):
-            from pdf2image import convert_from_path
-            images = convert_from_path(file_path, first_page=1, last_page=1)
-            if images:
-                img = images[0]
-                img.thumbnail((200, 200))
-                img.save(thumb_path, "JPEG")
-        else:
-            return None
-        logger.info(f"Extracted thumbnail for user {user_id}: {thumb_path}")
-        return thumb_path
-    except Exception as e:
-        logger.error(f"Error extracting thumbnail for user {user_id}: {e}")
-        return None
-
-async def upscale_image(file_path: str, user_id: int) -> str:
-    scale = await codeflixbots.get_upscale_scale(user_id)
-    factor = float(scale.split(":")[0]) if ":" in scale else 2.0
-    output_path = f"downloads/upscaled_{user_id}.png"
-    try:
-        if file_path.endswith(".pdf"):
-            from pdf2image import convert_from_path
-            images = convert_from_path(file_path, first_page=1, last_page=1)
-            if not images:
-                raise ValueError("Failed to extract PDF page")
-            img = cv2.cvtColor(np.array(images[0]), cv2.COLOR_RGB2BGR)
-        else:
-            img = cv2.imread(file_path)
-        if img is None:
-            raise ValueError("Failed to load image")
-        height, width = img.shape[:2]
-        new_size = (int(width * factor), int(height * factor))
-        upscaled = cv2.resize(img, new_size, interpolation=cv2.INTER_CUBIC)
-        cv2.imwrite(output_path, upscaled)
-        logger.info(f"Upscaled image for user {user_id}: {output_path}")
-        return output_path
-    except Exception as e:
-        logger.error(f"Error upscaling image for user {user_id}: {e}")
-        return None
+            quality = extractor(match)
+            logger.info(f"Extracted quality: {quality}")
+            return quality
+    logger.warning(f"No quality matched for {filename}, returning UNKNOWN")
+    return "UNKNOWN"
 
 async def cleanup_files(*paths):
     for path in paths:
         try:
             if path and os.path.exists(path):
                 os.remove(path)
+                logger.info(f"Cleaned up file: {path}")
         except Exception as e:
             logger.error(f"Error removing {path}: {e}")
 
-@Client.on_message(filters.command("settemplate") & filters.private)
-async def set_template(client, message):
-    user_id = message.from_user.id
-    if not await is_authorized(user_id):
-        await message.reply("Unauthorized!")
-        return
-    if len(message.command) < 2:
-        await message.reply("Please provide a template, e.g., /settemplate [AS] [Vol{volume}-Ch{chapter}] {title} [{quality}].pdf")
-        return
-    template = " ".join(message.command[1:])
-    if await codeflixbots.set_format_template(user_id, template):
-        await message.reply(f"Template set to: {template}")
-    else:
-        await message.reply("Failed to set template.")
-
-@Client.on_message((filters.document | filters.video | filters.photo) & filters.private)
-async def process_file(client: Client, message: Message):
-    user_id = message.from_user.id
-    if not await is_authorized(user_id):
-        await message.reply("Unauthorized!")
-        return
-
-    file = message.document or message.video or message.photo
-    file_type = file.mime_type or "application/pdf"
-    original_name = file.file_name or f"file_{user_id}"
-    file_path = f"downloads/{user_id}_{original_name}"
-    os.makedirs("downloads", exist_ok=True)
-
-    msg = await message.reply("**Downloading...**")
-    thumb_path = None
-    new_file_path = None
-
+async def process_thumbnail(thumb_path):
+    if not thumb_path or not os.path.exists(thumb_path):
+        return None
     try:
-        await message.download(file_path)
-        logger.info(f"Downloaded file for user {user_id}: {file_path}")
-
-        media_preference = await codeflixbots.get_media_preference(user_id)
-        if media_preference and media_preference not in file_type:
-            await msg.edit(f"Your media preference is set to '{media_preference}'. Please upload a {media_preference} file or change it with /setmedia.")
-            return
-        await apply_metadata(file_path, user_id)
-
-        if await codeflixbots.get_exthum_timestamp(user_id) is not None:
-            await msg.edit("**Extracting thumbnail...**")
-            thumb_path = await extract_thumbnail(file_path, user_id)
-
-        if file_type in ["image/png", "image/jpeg", "application/pdf"] and await codeflixbots.get_upscale_scale(user_id) != "2:2":
-            await msg.edit("**Upscaling image...**")
-            file_path = await upscale_image(file_path, user_id) or file_path
-
-        await msg.edit("**Renaming file...**")
-        new_filename = await generate_filename(user_id, file_type, original_name)
-        new_file_path = f"downloads/{new_filename}"
-        os.rename(file_path, new_file_path)
-
-        await msg.edit("**Uploading...**")
-        if media_preference == "video":
-            await client.send_video(
-                chat_id=message.chat.id,
-                video=new_file_path,
-                caption=new_filename,
-                thumb=thumb_path
-            )
-        elif media_preference == "photo":
-            await client.send_photo(
-                chat_id=message.chat.id,
-                photo=new_file_path,
-                caption=new_filename
-            )
-        else:
-            await client.send_document(
-                chat_id=message.chat.id,
-                document=new_file_path,
-                file_name=new_filename,
-                caption=new_filename,
-                thumb=thumb_path
-            )
-
-        logger.info(f"Processed file for user {user_id}: {new_filename}")
-        await msg.edit("File processed successfully!")
-
-    except FloodWait as fw:
-        logger.warning(f"FloodWait for user {user_id}: {fw.value}s")
-        await asyncio.sleep(fw.value)
-        await msg.edit("Rate limit hit, please try again later.")
+        with Image.open(thumb_path) as img:
+            img = img.convert("RGB").resize((320, 320))
+            img.save(thumb_path, "JPEG")
+        logger.info(f"Processed thumbnail: {thumb_path}")
+        return thumb_path
     except Exception as e:
-        logger.error(f"Error processing file for user {user_id}: {e}")
-        await msg.edit("Failed to process file.")
-    finally:
-        await cleanup_files(file_path, new_file_path, thumb_path)
+        logger.error(f"Thumbnail processing failed: {e}")
+        await cleanup_files(thumb_path)
+        return None
+
+def sanitize_metadata_value(value):
+    if not value:
+        return None
+    value = re.sub(r'[\x00-\x1F\x7F"\']', '', value).strip()
+    return value[:255] if value else None
+
+async def add_metadata(input_path, output_path, user_id):
+    ffmpeg = shutil.which('ffmpeg')
+    logger.info(f"FFmpeg path: {ffmpeg}")
+    if not ffmpeg:
+        logger.error("FFmpeg not found")
+        raise RuntimeError("FFmpeg not found")
+    
+    if not os.path.exists(input_path):
+        logger.error(f"Input file {input_path} does not exist")
+        raise RuntimeError(f"Input file {input_path} does not exist")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            metadata = {}
+            for key, getter in [
+                ('title', codeflixbots.get_title),
+                ('artist', codeflixbots.get_artist),
+                ('author', codeflixbots.get_author),
+                ('video_title', codeflixbots.get_video),
+                ('audio_title', codeflixbots.get_audio),
+                ('subtitle', codeflixbots.get_subtitle)
+            ]:
+                value = await getter(user_id)
+                metadata[key] = sanitize_metadata_value(value)
+                logger.info(f"Retrieved {key} for user {user_id}: {metadata[key]}")
+
+            cmd = [ffmpeg, '-i', input_path, '-map', '0', '-c', 'copy', '-loglevel', 'error']
+            has_metadata = False
+            for key, value in metadata.items():
+                if value:
+                    has_metadata = True
+                    if key == 'video_title':
+                        cmd.extend(['-metadata:s:v', f'title={value}'])
+                    elif key == 'audio_title':
+                        cmd.extend(['-metadata:s:a', f'title={value}'])
+                    elif key == 'subtitle':
+                        cmd.extend(['-metadata:s:s', f'title={value}'])
+                    else:
+                        cmd.extend(['-metadata', f'{key}={value}'])
+            if not has_metadata:
+                logger.info(f"No valid metadata for user {user_id}, skipping")
+                return False
+            cmd.append(output_path)
+            
+            logger.info(f"Running FFmpeg: {' '.join(cmd)}")
+            start_time = time.time()
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=600.0)
+            
+            if process.returncode != 0:
+                logger.error(f"FFmpeg error (return code {process.returncode}): {stderr.decode()}")
+                raise RuntimeError(f"FFmpeg failed: {stderr.decode()}")
+            if not os.path.exists(output_path):
+                logger.error(f"Output file {output_path} not created")
+                raise RuntimeError(f"Output file {output_path} not created")
+            logger.info(f"Metadata added in {time.time() - start_time:.2f}s")
+            return True
+        except asyncio.TimeoutError:
+            logger.error(f"Metadata processing timed out after 600s (attempt {attempt+1}/{max_retries})")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            return False
+        except Exception as e:
+            logger.error(f"Metadata processing failed (attempt {attempt+1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+                continue
+            raise
+
+async def send_to_dump_channel(client, message, user_id):
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            sent_message = await client.send_document(
+                chat_id=Config.DUMP_CHANNEL,
+                document=message.document.file_id,
+                caption=f"From user {user_id}",
+                disable_notification=True
+            )
+            logger.info(f"Sent file to dump channel for user {user_id} (attempt {attempt + 1})")
+            return sent_message
+        except FloodWait as e:
+            logger.warning(f"FloodWait during dump channel send: {e.value}s")
+            await asyncio.sleep(e.value)
+        except Exception as e:
+            logger.error(f"Dump channel send failed for user {user_id}: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
+            else:
+                break
+    return None
+
+@Client.on_message((filters.document | filters.video | filters.audio) & filters.private)
+async def process_file(client, message):
+    user_id = message.from_user.id
+    await codeflixbots.clear_stale_tasks(user_id)  # Clear stale tasks
+    format_template = await codeflixbots.get_format_template(user_id)
+    rename_mode = await codeflixbots.get_user_choice(user_id)
+    custom_suffix = await codeflixbots.get_custom_suffix(user_id) or "Finished_Society"
+
+    download_path = None
+    metadata_path = None
+    thumb_path = None
+
+    if message.document:
+        file_id = message.document.file_id
+        file_name = message.document.file_name or "document"
+        file_size = message.document.file_size
+        media_type = "document"
+    elif message.video:
+        file_id = message.video.file_id
+        file_name = message.video.file_name or "video"
+        file_size = message.video.file_size
+        media_type = "video"
+    elif message.audio:
+        file_id = message.audio.file_id
+        file_name = message.audio.file_name or "audio"
+        file_size = message.audio.file_size
+        media_type = "audio"
+    else:
+        return await message.reply_text("Unsupported file type")
+
+    if await check_anti_nsfw(file_name, message):
+        return await message.reply_text("NSFW content detected")
+
+    async with global_semaphore:
+        async with user_locks[user_id]:
+            try:
+                if not rename_mode:
+                    rename_mode = "filename"
+                    logger.info(f"No rename_mode set for user {user_id}, defaulting to filename")
+
+                input_text = file_name if rename_mode == "filename" else (message.caption or file_name)
+                volume, chapter, season, episode, title = extract_metadata(input_text, rename_mode)
+                quality = extract_quality(file_name)
+
+                # Log if defaults are used
+                if all(x == "UNKNOWN" for x in [volume, chapter, season, episode]) and title == "Unknown_Title":
+                    logger.info(f"Using default metadata for user {user_id}: {input_text}")
+
+                if format_template:
+                    new_template = format_template
+                else:
+                    new_template = "{title}_S{season}E{episode}_{quality}_{suffix}.mkv"
+                    logger.info(f"No format_template for user {user_id}, using default: {new_template}")
+
+                template_ext_match = re.search(r'\.([a-zA-Z0-9]+)$', new_template)
+                template_ext = f".{template_ext_match.group(1)}" if template_ext_match else None
+                original_ext = os.path.splitext(file_name)[1] or ('.mkv' if media_type == "video" else '.mp3')
+                target_ext = template_ext if template_ext else original_ext
+
+                if template_ext:
+                    new_template = re.sub(r'\.[a-zA-Z0-9]+$', '', new_template)
+
+                replacements = {
+                    '{volume}': volume,
+                    '{chapter}': chapter,
+                    '{season}': season,
+                    '{episode}': episode,
+                    '{quality}': quality,
+                    '{title}': title,
+                    '{suffix}': custom_suffix,
+                    'Volume': volume,
+                    'Chapter': chapter,
+                    'Season': season,
+                    'Episode': episode,
+                    'QUALITY': quality,
+                    'TITLE': title,
+                    'SUFFIX': custom_suffix
+                }
+
+                new_filename = new_template
+                for placeholder, value in replacements.items():
+                    new_filename = new_filename.replace(placeholder, str(value))
+
+                if not new_filename.strip():
+                    new_filename = f"file_{user_id}"
+                    logger.warning(f"Generated filename is empty for user {user_id}, using fallback: {new_filename}")
+
+                full_filename = f"{new_filename}{target_ext}"
+
+                if len(full_filename) > 255:
+                    new_filename = f"{title}_S{season}E{episode}_{quality}"
+                    full_filename = f"{new_filename}{target_ext}"
+                    logger.warning(f"Filename too long for user {user_id}, truncated to: {full_filename}")
+
+                new_filename = sanitize_filename(full_filename)
+                download_path = f"downloads/{user_id}/{new_filename}"
+                metadata_path = f"metadata/{user_id}/{new_filename}"
+
+                os.makedirs(os.path.dirname(download_path), exist_ok=True)
+                os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
+
+                msg = await message.reply_text("**Downloading...**")
+                start_time = time.time()
+                max_retries = 3
+                for attempt in range(max_retries):
+                    download_task = asyncio.create_task(client.download_media(
+                        message,
+                        file_name=download_path,
+                        progress=progress_for_pyrogram,
+                        progress_args=("Downloading...", msg, time.time())
+                    ))
+                    user_tasks[user_id].append(download_task)
+                    try:
+                        file_path = await download_task
+                        break
+                    except FloodWait as e:
+                        logger.warning(f"FloodWait during download: {e.value}s (attempt {attempt+1}/{max_retries})")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(e.value)
+                            continue
+                        raise
+                    except asyncio.CancelledError:
+                        logger.info(f"Download cancelled for user {user_id}")
+                        await msg.edit("Task cancelled.")
+                        return
+                    except ChatAdminRequired:
+                        logger.error(f"ChatAdminRequired during download")
+                        await msg.edit("Error: Bot lacks admin rights.")
+                        await send_log(client, message.from_user, f"Download failed: Bot lacks admin rights")
+                        return
+                    except Exception as e:
+                        logger.error(f"Download failed for user {user_id}: {e}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(1)
+                            continue
+                        await msg.edit(f"Download failed: {e}")
+                        await send_log(client, message.from_user, f"Download failed: {str(e)}")
+                        return
+
+                metadata_enabled = await codeflixbots.get_metadata(user_id) == "On"
+                if metadata_enabled:
+                    await msg.edit("**Processing metadata...**")
+                    try:
+                        if not os.path.exists(file_path):
+                            logger.error(f"Input file {file_path} does not exist for metadata")
+                            await msg.edit("Error: Input file not found, skipping metadata")
+                            await send_log(client, message.from_user, f"Metadata failed: Input file {file_path} missing")
+                        elif await add_metadata(file_path, metadata_path, user_id):
+                            if os.path.exists(metadata_path):
+                                file_path = metadata_path
+                                logger.info(f"Using metadata file: {metadata_path}")
+                            else:
+                                logger.warning(f"Metadata file {metadata_path} not found, using {file_path}")
+                        else:
+                            logger.info(f"No metadata applied for user {user_id}")
+                    except Exception as e:
+                        logger.error(f"Metadata processing failed for user {user_id}: {e}")
+                        await msg.edit(f"Metadata processing failed, proceeding without metadata: {e}")
+                        await send_log(client, message.from_user, f"Metadata processing failed: {str(e)}")
+                else:
+                    logger.info(f"Metadata disabled for user {user_id}")
+
+                await msg.edit("**Preparing upload...**")
+                caption = await codeflixbots.get_caption(user_id) or f"**{new_filename}**"
+                thumb = await codeflixbots.get_thumbnail(user_id)
+                thumb_path = None
+
+                if thumb:
+                    thumb_path = await client.download_media(thumb)
+                elif media_type == "video" and message.video and message.video.thumbs:
+                    thumb_path = await client.download_media(message.video.thumbs[0].file_id)
+                
+                thumb_path = await process_thumbnail(thumb_path)
+
+                await msg.edit("**Uploading...**")
+                if not os.path.exists(file_path):
+                    logger.error(f"Upload failed: File {file_path} does not exist")
+                    await msg.edit(f"Upload failed: File {new_filename} not found")
+                    await send_log(client, message.from_user, f"Upload failed: File {file_path} missing")
+                    return
+                
+                upload_start = time.time()
+                for attempt in range(max_retries):
+                    upload_task = asyncio.create_task(client.send_document(
+                        chat_id=message.chat.id,
+                        document=file_path,
+                        caption=caption,
+                        thumb=thumb_path,
+                        progress=progress_for_pyrogram,
+                        progress_args=("Uploading...", msg, time.time())
+                    ))
+                    user_tasks[user_id].append(upload_task)
+                    try:
+                        sent_message = await upload_task
+                        logger.info(f"Uploaded to user in {time.time() - upload_start:.2f}s")
+                        await msg.delete()
+                        break
+                    except FloodWait as e:
+                        logger.warning(f"FloodWait during upload: {e.value}s (attempt {attempt+1}/{max_retries})")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(e.value)
+                            continue
+                        raise
+                    except asyncio.CancelledError:
+                        logger.info(f"Upload cancelled for user {user_id}")
+                        await msg.edit("Task cancelled.")
+                        return
+                    except ChatAdminRequired:
+                        logger.error(f"ChatAdminRequired during upload")
+                        await msg.edit("Error: Bot lacks admin rights.")
+                        await send_log(client, message.from_user, f"Upload failed: Bot lacks admin rights")
+                        return
+                    except Exception as e:
+                        logger.error(f"Upload failed for user {user_id}: {e}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(1)
+                            continue
+                        await msg.edit(f"Upload failed: {e}")
+                        await send_log(client, message.from_user, f"Upload failed: {str(e)}")
+                        return
+
+                try:
+                    if os.path.exists(file_path):
+                        asyncio.create_task(send_to_dump_channel(client, sent_message, user_id))
+                    else:
+                        logger.error(f"File {file_path} does not exist for dump channel")
+                        await send_log(client, message.from_user, f"Dump channel failed: File {file_path} missing")
+                except Exception as e:
+                    logger.error(f"Dump channel send failed for user {user_id}: {e}")
+                    await send_log(client, message.from_user, f"Dump channel send failed: {str(e)}")
+
+            except Exception as e:
+                logger.error(f"Processing error for user {user_id}: {e}")
+                await message.reply_text(f"Error: {str(e)}")
+                await send_log(client, message.from_user, f"Processing error: {str(e)}")
+            finally:
+                await cleanup_files(download_path, metadata_path, thumb_path)
+                user_tasks[user_id] = [t for t in user_tasks[user_id] if not t.done()]
+                
