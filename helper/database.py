@@ -1,7 +1,7 @@
 import logging
 import asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo.errors import ConnectionError, OperationFailure
+from pymongo.errors import ConnectionFailure, OperationFailure
 from config import Config
 
 logging.basicConfig(
@@ -69,7 +69,7 @@ class Database:
                     return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting rename_mode for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error setting rename_mode for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -88,7 +88,7 @@ class Database:
                     return user.get("rename_mode", "filename") if user else "filename"
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting rename_mode for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error getting rename_mode for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -113,7 +113,7 @@ class Database:
                     return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting custom_suffix for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error setting custom_suffix for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -132,7 +132,7 @@ class Database:
                     return user.get("custom_suffix") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting custom_suffix for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error getting custom_suffix for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -157,7 +157,7 @@ class Database:
                     return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting format_template for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error setting format_template for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -176,7 +176,7 @@ class Database:
                     return user.get("format_template") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting format_template for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error getting format_template for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -201,7 +201,7 @@ class Database:
                     return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting metadata_enabled for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error setting metadata_enabled for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -220,7 +220,7 @@ class Database:
                     return user.get("metadata_enabled", "Off") if user else "Off"
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting metadata_enabled for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error getting metadata_enabled for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -245,7 +245,7 @@ class Database:
                     return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting title for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error setting title for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -264,7 +264,7 @@ class Database:
                     return user.get("title") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting title for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error getting title for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -289,7 +289,7 @@ class Database:
                     return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting artist for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error setting artist for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -308,7 +308,7 @@ class Database:
                     return user.get("artist") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting artist for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error getting artist for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -333,7 +333,7 @@ class Database:
                     return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting author for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error setting author for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -352,7 +352,7 @@ class Database:
                     return user.get("author") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting author for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error getting author for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -377,31 +377,7 @@ class Database:
                     return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting video_title for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
-                logger.warning(f"Connection error setting video_title for user {user_id} (attempt {attempt+1}/{max_retries})")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1)
-            except Exception as e:
-                logger.error(f"Error setting video_title for user {user_id}: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1)
-        logger.error(f"Failed to set video_title for user {user_id} after {max_retries} attempts")
-
-    async def set_video(obito, user_id: int, video_title: str):
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                async with asyncio.timeout(5):
-                    await obito.users.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"video_title": video_title}},
-                        upsert=True
-                    )
-                    logger.info(f"Set video_title '{video_title}' for user {user_id}")
-                    return
-            except asyncio.TimeoutError:
-                logger.warning(f"Timeout setting video_title for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error setting video_title for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -420,7 +396,7 @@ class Database:
                     return user.get("video_title") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting video_title for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error getting video_title for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -445,7 +421,7 @@ class Database:
                     return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting audio_title for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error setting audio_title for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -464,7 +440,7 @@ class Database:
                     return user.get("audio_title") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting audio_title for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error getting audio_title for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -489,7 +465,7 @@ class Database:
                     return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting subtitle for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error setting subtitle for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -508,7 +484,7 @@ class Database:
                     return user.get("subtitle") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting subtitle for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error getting subtitle for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -533,7 +509,7 @@ class Database:
                     return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting caption for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error setting caption for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -552,7 +528,7 @@ class Database:
                     return user.get("caption") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting caption for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error getting caption for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -577,7 +553,7 @@ class Database:
                     return
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout setting thumbnail for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error setting thumbnail for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -596,7 +572,7 @@ class Database:
                     return user.get("thumbnail") if user else None
             except asyncio.TimeoutError:
                 logger.warning(f"Timeout getting thumbnail for user {user_id} (attempt {attempt+1}/{max_retries})")
-            except ConnectionError:
+            except ConnectionFailure:
                 logger.warning(f"Connection error getting thumbnail for user {user_id} (attempt {attempt+1}/{max_retries})")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
@@ -621,4 +597,4 @@ class Database:
         except Exception as e:
             logger.error(f"Error clearing stale tasks for user {user_id}: {e}")
 
-codeflixbots = Database()
+codeflixbots = Database() 
