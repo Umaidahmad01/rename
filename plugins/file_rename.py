@@ -12,12 +12,16 @@ import os
 import time
 import re
 import ffmpeg
+import img2pdf
+import zipfile
 import shutil
 import logging
+import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Dictionary to track active renaming operations (user_id:file_id)
 renaming_operations = {}
 
 # Pattern 1: S01E02 or S01EP02
@@ -264,18 +268,22 @@ async def auto_rename_files(client, message):
     else:
         return await message.reply_text("Unsupported File Type")
 
-    logger.info(f"Processing file: {file_name} for user {user_id}")
+    # Unique operation key for concurrency
+    operation_key = f"{user_id}:{file_id}"
+    logger.info(f"Processing file: {file_name} for user {user_id} (operation: {operation_key})")
 
-    if file_id in renaming_operations:
-        elapsed_time = (datetime.now() - renaming_operations[file_id]).seconds
+    # Check if this specific user's file is being processed
+    if operation_key in renaming_operations:
+        elapsed_time = (datetime.now() - renaming_operations[operation_key]).seconds
         if elapsed_time < 10:
-            logger.info(f"File {file_id} ignored: recently renamed")
+            logger.info(f"File {file_id} for user {user_id} ignored: recently renamed")
             return
 
-    renaming_operations[file_id] = datetime.now()
+    renaming_operations[operation_key] = datetime.now()
+    logger.info(f"Active operations: {len(renaming_operations)}")
 
     source_text = file_name if rename_mode == "filename" else (message.caption or file_name)
-    logger.info(f"Extraction Source ({rename_mode}): {source_text}")
+    logger.info(f"Extraction Source ({rename_mode}): {source_text} for user {user_id}")
 
     episode_number = extract_episode_number(source_text)
     quality = extract_quality(source_text)
@@ -285,7 +293,7 @@ async def auto_rename_files(client, message):
 
     if quality == "Unknown":
         await message.reply_text("I Was Not Able To Extract The Quality Properly. Renaming As 'Unknown'...")
-        del renaming_operations[file_id]
+        del renaming_operations[operation_key]
         return
 
     format_template = format_template.replace("{episode}", str(episode_number or "Unknown"), 1)
@@ -308,27 +316,29 @@ async def auto_rename_files(client, message):
     if not template_ext:
         template_ext = os.path.splitext(file_name)[1].lower()
     new_file_name = f"{os.path.splitext(format_template)[0]}{template_ext}"
-    file_path = f"downloads/{new_file_name}"
+    # Unique file path for this user
+    file_path = f"downloads/{user_id}_{new_file_name}"
 
     download_msg = await message.reply_text(text="Trying To Download.....")
     try:
         downloaded_path = await client.download_media(
             message=message,
-            file_name=f"downloads/temp_{file_id}{os.path.splitext(file_name)[1]}",
+            file_name=f"downloads/{user_id}_temp_{file_id}{os.path.splitext(file_name)[1]}",
             progress=progress_for_pyrogram,
             progress_args=("Download Started....", download_msg, time.time())
         )
     except Exception as e:
         logger.error(f"Download error for user {user_id}: {e}")
-        del renaming_operations[file_id]
+        del renaming_operations[operation_key]
         return await download_msg.edit(f"Download Error: {e}")
 
     try:
         converted_path = convert_file(downloaded_path, file_path, template_ext)
     except Exception as e:
         logger.error(f"Conversion error for user {user_id}: {e}")
-        os.remove(downloaded_path)
-        del renaming_operations[file_id]
+        if os.path.exists(downloaded_path):
+            os.remove(downloaded_path)
+        del renaming_operations[operation_key]
         return await download_msg.edit(f"Conversion Error: {e}")
 
     final_path = await apply_metadata(converted_path, user_id, client)
@@ -353,18 +363,22 @@ async def auto_rename_files(client, message):
     ) if c_caption else f"**{new_file_name}**"
 
     if c_thumb:
-        ph_path = await client.download_media(c_thumb)
+        ph_path = await client.download_media(c_thumb, file_name=f"downloads/{user_id}_thumb_{file_id}.jpg")
         logger.info(f"Thumbnail downloaded for user {user_id}: {ph_path}")
     elif media_type == "video" and message.video and message.video.thumbs:
-        ph_path = await client.download_media(message.video.thumbs[0].file_id)
+        ph_path = await client.download_media(message.video.thumbs[0].file_id, file_name=f"downloads/{user_id}_thumb_{file_id}.jpg")
     elif media_type == "photo" and message.photo:
-        ph_path = await client.download_media(message.photo.file_id)
+        ph_path = await client.download_media(message.photo.file_id, file_name=f"downloads/{user_id}_thumb_{file_id}.jpg")
 
     if ph_path and template_ext not in [".pdf", ".cbz"]:
-        Image.open(ph_path).convert("RGB").save(ph_path)
-        img = Image.open(ph_path)
-        img.resize((320, 320))
-        img.save(ph_path, "JPEG")
+        try:
+            Image.open(ph_path).convert("RGB").save(ph_path)
+            img = Image.open(ph_path)
+            img.resize((320, 320))
+            img.save(ph_path, "JPEG")
+        except Exception as e:
+            logger.error(f"Thumbnail processing error for user {user_id}: {e}")
+            ph_path = None
 
     log_message = (
         f"**File Renamed**\n"
@@ -421,16 +435,20 @@ async def auto_rename_files(client, message):
             )
     except Exception as e:
         logger.error(f"Upload error for user {user_id}: {e}")
-        os.remove(final_path)
-        if ph_path:
+        if os.path.exists(final_path):
+            os.remove(final_path)
+        if ph_path and os.path.exists(ph_path):
             os.remove(ph_path)
-        del renaming_operations[file_id]
+        del renaming_operations[operation_key]
         return await upload_msg.edit(f"Upload Error: {e}")
 
     await download_msg.delete()
-    os.remove(final_path)
-    os.remove(downloaded_path)
-    if ph_path:
+    if os.path.exists(final_path):
+        os.remove(final_path)
+    if os.path.exists(downloaded_path):
+        os.remove(downloaded_path)
+    if ph_path and os.path.exists(ph_path):
         os.remove(ph_path)
 
-    del renaming_operations[file_id]
+    del renaming_operations[operation_key]
+    logger.info(f"Operation completed for user {user_id}. Active operations: {len(renaming_operations)}")
