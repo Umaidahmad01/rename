@@ -3,14 +3,14 @@ import asyncio
 from PIL import Image
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-from helper.database import *
+from helper.database import codeflixbots
 from config import Config, Txt
 import logging
 from pyrogram.errors import FloodWait, MessageNotModified, ChatAdminRequired
 import os
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize MongoDB (already imported as codeflixbots)
 db = codeflixbots
@@ -132,8 +132,91 @@ async def bought(client, message):
         )
         await msg.edit_text('<b>Your screenshot has been sent to Admins</b>')
 
-    # Handle other callbacks (home, help, etc.)
-    elif data == "home":
+# Thumbnail Command Handler
+@Client.on_message(filters.private & filters.command("setthumbnail"))
+async def set_thumbnail(client, message):
+    user_id = message.from_user.id
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        await message.reply_text("Please reply to a photo to set it as your thumbnail.")
+        return
+
+    thumbnail_id = message.reply_to_message.photo.file_id
+    await codeflixbots.set_thumbnail(user_id, thumbnail_id)
+    
+    # Log thumbnail setting activity
+    log_message = (
+        f"**Thumbnail Set**\n"
+        f"User: {message.from_user.mention} (`{user_id}`)\n"
+        f"Thumbnail ID: {thumbnail_id}"
+    )
+    try:
+        await client.send_message(Config.LOG_CHANNEL, log_message)
+        await client.send_photo(Config.DUMP_CHANNEL, thumbnail_id, caption=log_message)
+    except Exception as e:
+        logger.error(f"Error logging thumbnail for user {user_id}: {e}")
+
+    await message.reply_text("Thumbnail set successfully!")
+
+# Extraction Command Handler
+async def get_extraction_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Generate inline keyboard for /extraction with ✅ on selected mode."""
+    current_mode = await codeflixbots.get_rename_mode(user_id)
+    buttons = [
+        [
+            InlineKeyboardButton(
+                f"Filename {'✅' if current_mode == 'filename' else ''}",
+                callback_data="extraction_filename"
+            ),
+            InlineKeyboardButton(
+                f"Caption {'✅' if current_mode == 'caption' else ''}",
+                callback_data="extraction_caption"
+            )
+        ]
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+@Client.on_message(filters.command("extraction") & filters.private)
+async def extraction(client, message):
+    user_id = message.from_user.id
+    keyboard = await get_extraction_keyboard(user_id)
+    await message.reply_text(
+        "Select rename mode:",
+        reply_markup=keyboard
+    )
+    logger.info(f"Displayed extraction keyboard for user {user_id}")
+
+@Client.on_callback_query(filters.regex(r"^extraction_"))
+async def extraction_callback(client, callback_query):
+    user_id = callback_query.from_user.id
+    mode = callback_query.data.split("_")[1]  # e.g., "filename" or "caption"
+    try:
+        await codeflixbots.set_rename_mode(user_id, mode)
+        keyboard = await get_extraction_keyboard(user_id)
+        await callback_query.message.edit_text(
+            f"Selected rename mode: {mode} ✅",
+            reply_markup=keyboard
+        )
+        # Log mode change activity
+        log_message = (
+            f"**Rename Mode Changed**\n"
+            f"User: {callback_query.from_user.mention} (`{user_id}`)\n"
+            f"New Mode: {mode}"
+        )
+        await client.send_message(Config.LOG_CHANNEL, log_message)
+        await client.send_message(Config.DUMP_CHANNEL, log_message)
+        await callback_query.answer(f"Set to {mode}")
+        logger.info(f"User {user_id} set rename_mode to {mode}")
+    except Exception as e:
+        await callback_query.answer("Error setting mode", show_alert=True)
+        logger.error(f"Error setting rename_mode for user {user_id}: {e}")
+
+# Callback Query Handler
+@Client.on_callback_query()
+async def callback(client, query: CallbackQuery):
+    data = query.data
+    user_id = query.from_user.id
+
+    if data == "home":
         await query.message.edit_text(
             text=Txt.START_TXT.format(query.from_user.mention),
             disable_web_page_preview=True,
@@ -235,87 +318,5 @@ async def bought(client, message):
         try:
             await query.message.delete()
             await query.message.reply_to_message.delete()
-            await query.message.continue_propagation()
         except:
             await query.message.delete()
-            await query.message.continue_propagation()
-
-async def get_extraction_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Generate inline keyboard for /extraction with ✅ on selected mode."""
-    current_mode = await codeflixbots.get_user_choice(user_id) or "filename"
-    buttons = [
-        [
-            InlineKeyboardButton(
-                f"Filename {'✅' if current_mode == 'filename' else ''}",
-                callback_data="extraction_filename"
-            ),
-            InlineKeyboardButton(
-                f"Caption {'✅' if current_mode == 'filecaption' else ''}",
-                callback_data="extraction_filecaption"
-            )
-        ]
-    ]
-    return InlineKeyboardMarkup(buttons)
-
-@app.on_message(filters.command("start"))
-async def start(client: Client, message: Message):
-    user_id = message.from_user.id
-    await codeflixbots.add_user(client, message)
-    await message.reply_text("Welcome to RenameBot! Use /extraction to set rename mode. Bot made by Obito.")
-
-@app.on_message(filters.command("extraction"))
-async def extraction(client: Client, message: Message):
-    user_id = message.from_user.id
-    keyboard = await get_extraction_keyboard(user_id)
-    await message.reply_text(
-        "Select rename mode:",
-        reply_markup=keyboard
-    )
-    logger.info(f"Displayed extraction keyboard for user {user_id}")
-
-@app.on_callback_query(filters.regex(r"^extraction_"))
-async def extraction_callback(client: Client, callback_query: CallbackQuery):
-    user_id = callback_query.from_user.id
-    mode = callback_query.data.split("_")[1]  # e.g., "filename" or "filecaption"
-    try:
-        await codeflixbots.set_user_choice(user_id, mode)
-        keyboard = await get_extraction_keyboard(user_id)
-        await callback_query.message.edit_text(
-            f"Selected rename mode: {mode} ✅",
-            reply_markup=keyboard
-        )
-        await callback_query.answer(f"Set to {mode}")
-        logger.info(f"User {user_id} set rename_mode to {mode}")
-    except Exception as e:
-        await callback_query.answer("Error setting mode", show_alert=True)
-        logger.error(f"Error setting rename_mode for user {user_id}: {e}")
-
-@app.on_message(filters.document | filters.video | filters.audio | filters.photo)
-async def handle_media(client: Client, message: Message):
-    if message.photo:
-        await upscale_image_command(client, message)
-    else:
-        await process_file(client, message)
-
-@app.on_message(filters.command("cancel"))
-async def cancel(client: Client, message: Message):
-    await cancel_tasks(client, message)
-
-@app.on_message(filters.command("exthum"))
-async def exthum(client: Client, message: Message):
-    await extract_thumbnail_command(client, message)
-
-@app.on_message(filters.command("setmedia"))
-async def setmedia(client: Client, message: Message):
-    await set_media_command(client, message)
-
-@app.on_message(filters.command("togglemkv"))
-async def togglemkv(client: Client, message: Message):
-    await toggle_mkv_command(client, message)
-
-@app.on_message(filters.command("upscale"))
-async def upscale(client: Client, message: Message):
-    await upscale_image_command(client, message)
-
-if __name__ == "__main__":
-    app.run()
