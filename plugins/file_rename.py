@@ -12,8 +12,6 @@ import os
 import time
 import re
 import ffmpeg
-import img2pdf
-import zipfile
 import shutil
 import logging
 
