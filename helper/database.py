@@ -133,4 +133,4 @@ class Database:
         user = await obito.col.find_one({'_id': int(id)})
         return user.get('video', None)
 
-codeflixbots = Database()
+codeflixbots = Database(Config.DB_URL, Config.DB_NAME)
