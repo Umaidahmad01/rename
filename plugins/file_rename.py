@@ -35,17 +35,11 @@ pattern4_2 = re.compile(r'S(\d+)', re.IGNORECASE)
 # Pattern X: Standalone Episode Number
 patternX = re.compile(r'(\d+)')
 # QUALITY PATTERNS 
-# Pattern 5: 3-4 digits before 'p' as quality
 pattern5 = re.compile(r'\b(?:.*?(\d{3,4}[^\dp]*p).*?|.*?(\d{3,4}p))\b', re.IGNORECASE)
-# Pattern 6: Find 4k in brackets or parentheses
-pattern6 = re.commito/pile(r'[([<{]?\s*4k\s*[)\]>}]?', re.IGNORECASE)
-# Pattern 7: Find 2k in brackets or parentheses
+pattern6 = re.compile(r'[([<{]?\s*4k\s*[)\]>}]?', re.IGNORECASE)  # Fixed typo
 pattern7 = re.compile(r'[([<{]?\s*2k\s*[)\]>}]?', re.IGNORECASE)
-# Pattern 8: Find HdRip without spaces
 pattern8 = re.compile(r'[([<{]?\s*HdRip\s*[)\]>}]?|\bHdRip\b', re.IGNORECASE)
-# Pattern 9: Find 4kX264 in brackets or parentheses
 pattern9 = re.compile(r'[([<{]?\s*4kX264\s*[)\]>}]?', re.IGNORECASE)
-# Pattern 10: Find 4kx265 in brackets or parentheses
 pattern10 = re.compile(r'[([<{]?\s*4kx265\s*[)\]>}]?', re.IGNORECASE)
 # CHAPTER AND VOLUME PATTERNS
 pattern_chapter = re.compile(r'(?:Chapter|Ch\.?|C\.?)\s*(\d+)', re.IGNORECASE)
@@ -156,7 +150,6 @@ def extract_volume_number(text):
     return None
 
 def convert_file(input_path, output_path, output_ext):
-    """Convert file to the specified format (MKV, MP4, PDF, CBZ)."""
     input_ext = os.path.splitext(input_path)[1].lower()
     output_ext = output_ext.lower()
 
@@ -201,7 +194,6 @@ def convert_file(input_path, output_path, output_ext):
     raise Exception(f"Unsupported conversion from {input_ext} to {output_ext}")
 
 async def apply_metadata(file_path, user_id, client):
-    """Apply metadata to the file if enabled."""
     metadata_enabled = await codeflixbots.get_metadata(user_id)
     if metadata_enabled != "On":
         return file_path
@@ -225,6 +217,15 @@ async def apply_metadata(file_path, user_id, client):
         stream = ffmpeg.output(stream, output_path, **ffmpeg_args, c="copy")
         ffmpeg.run(stream)
         os.remove(file_path)
+        # Log metadata application
+        log_message = (
+            f"**Metadata Applied**\n"
+            f"User: {user_id}\n"
+            f"File: {os.path.basename(output_path)}\n"
+            f"Metadata: {', '.join([f'{k}: {v}' for k, v in metadata.items() if v])}"
+        )
+        await client.send_message(Config.LOG_CHANNEL, log_message)
+        await client.send_message(Config.DUMP_CHANNEL, log_message)
         return output_path
     except Exception as e:
         logger.error(f"Metadata application error: {e}")
@@ -240,7 +241,6 @@ async def auto_rename_files(client, message):
     if not format_template:
         return await message.reply_text("Please Set An Auto Rename Format First Using /autorename")
 
-    # Extract file information
     if message.document:
         file_id = message.document.file_id
         file_name = message.document.file_name
@@ -260,14 +260,12 @@ async def auto_rename_files(client, message):
         file_id = message.photo.file_id
         file_name = f"photo_{file_id}.jpg"
         media_type = media_preference or "photo"
-        file_size = 0  # Photos don't have file_size
+        file_size = 0
     else:
         return await message.reply_text("Unsupported File Type")
 
     logger.info(f"Processing file: {file_name} for user {user_id}")
-    print(f"Original File Name: {file_name}")
 
-    # Check for recent renaming operations
     if file_id in renaming_operations:
         elapsed_time = (datetime.now() - renaming_operations[file_id]).seconds
         if elapsed_time < 10:
@@ -276,11 +274,9 @@ async def auto_rename_files(client, message):
 
     renaming_operations[file_id] = datetime.now()
 
-    # Determine extraction source (filename or caption)
     source_text = file_name if rename_mode == "filename" else (message.caption or file_name)
     logger.info(f"Extraction Source ({rename_mode}): {source_text}")
 
-    # Extract metadata
     episode_number = extract_episode_number(source_text)
     quality = extract_quality(source_text)
     chapter_number = extract_chapter_number(source_text)
@@ -292,7 +288,6 @@ async def auto_rename_files(client, message):
         del renaming_operations[file_id]
         return
 
-    # Replace placeholders in format template
     format_template = format_template.replace("{episode}", str(episode_number or "Unknown"), 1)
     format_template = format_template.replace("{Episode}", str(episode_number or "Unknown"), 1)
     format_template = format_template.replace("{EPISODE}", str(episode_number or "Unknown"), 1)
@@ -309,14 +304,12 @@ async def auto_rename_files(client, message):
     format_template = format_template.replace("{Season}", str(season_number or "Unknown"), 1)
     format_template = format_template.replace("{SEASON}", str(season_number or "Unknown"), 1)
 
-    # Determine output extension from format template
     template_ext = os.path.splitext(format_template)[1].lower()
     if not template_ext:
         template_ext = os.path.splitext(file_name)[1].lower()
     new_file_name = f"{os.path.splitext(format_template)[0]}{template_ext}"
     file_path = f"downloads/{new_file_name}"
 
-    # Download the file
     download_msg = await message.reply_text(text="Trying To Download.....")
     try:
         downloaded_path = await client.download_media(
@@ -330,7 +323,6 @@ async def auto_rename_files(client, message):
         del renaming_operations[file_id]
         return await download_msg.edit(f"Download Error: {e}")
 
-    # Convert file if necessary
     try:
         converted_path = convert_file(downloaded_path, file_path, template_ext)
     except Exception as e:
@@ -339,10 +331,8 @@ async def auto_rename_files(client, message):
         del renaming_operations[file_id]
         return await download_msg.edit(f"Conversion Error: {e}")
 
-    # Apply metadata if enabled
     final_path = await apply_metadata(converted_path, user_id, client)
 
-    # Extract duration for videos/audios
     duration = 0
     try:
         metadata = extractMetadata(createParser(final_path))
@@ -351,7 +341,6 @@ async def auto_rename_files(client, message):
     except Exception as e:
         logger.error(f"Error getting duration for user {user_id}: {e}")
 
-    # Upload the file
     upload_msg = await download_msg.edit("Trying To Upload.....")
     ph_path = None
     c_caption = await codeflixbots.get_caption(message.chat.id)
@@ -377,7 +366,6 @@ async def auto_rename_files(client, message):
         img.resize((320, 320))
         img.save(ph_path, "JPEG")
 
-    # Log renaming activity
     log_message = (
         f"**File Renamed**\n"
         f"User: {message.from_user.mention} (`{user_id}`)\n"
