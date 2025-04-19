@@ -97,3 +97,12 @@ async def add_prefix_suffix(text: str, prefix: str = None, suffix: str = None) -
     except Exception as e:
         logger.error(f"Error adding prefix/suffix: {e}")
         return text
+
+async def send_log(b, u):
+    from config import Config
+    log_message = (
+        f"**New User**\n"
+        f"User: {u.mention} (`{u.id}`)\n"
+        f"Username: @{u.username if u.username else 'None'}\n"
+        f"Name: {u.first_name}"
+    )
