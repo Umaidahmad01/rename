@@ -1,229 +1,220 @@
-import random
-import asyncio
-from PIL import Image
-from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-from helper.database import codeflixbots
-from config import Config, Txt
 import logging
-from pyrogram.errors import FloodWait, MessageNotModified, ChatAdminRequired
-import os
+import asyncio
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.errors import MessageNotModified, ChatAdminRequired
+from config import Config
+from helper.database import Database
+from helper.texts import Txt
+from helper.utils import send_log
 
-logging.basicConfig(level=logging.INFO)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# Initialize MongoDB (already imported as codeflixbots)
-db = codeflixbots
+# Initialize bot
+app = Client(
+    api_id=Config.API_ID,
+    api_hash=Config.API_HASH,
+    bot_token=Config.BOT_TOKEN
+)
 
-# Start Command Handler
-@Client.on_message(filters.private & filters.command("start"))
-async def start(client, message: Message):
-    user = message.from_user
+# Initialize database
+db = Database(Config.DB_URL, Config.DB_NAME)
+
+# Start command
+@app.on_message(filters.command("start") & filters.private)
+async def start_command(client, message):
+    logger.info(f"Start command received from user {message.from_user.id}")
     await db.add_user(client, message)
-
-    # Initial interactive text and sticker sequence
-    m = await message.reply_text("ᴋᴏɴɴɪᴄʜɪᴡᴀ..ɪ'ᴍ ᴋᴀɴᴀᴏ!\nᴡᴀɪᴛ ᴀ ᴍᴏᴍᴇɴᴛ. . .")
-    await asyncio.sleep(0.4)
-    await m.edit_text("🎊")
-    await asyncio.sleep(0.5)
-    await m.edit_text("⚡")
-    await asyncio.sleep(0.5)
-    await m.edit_text("ᴀʀᴀ ᴀʀᴀ!...")
-    await asyncio.sleep(0.4)
-    await m.delete()
-
-    # Send sticker after the text sequence
-    await message.reply_sticker("CAACAgUAAxkBAAECroBmQKMAAQ-Gw4nibWoj_pJou2vP1a4AAlQIAAIzDxlVkNBkTEb1Lc4eBA")
-
-    # Define buttons for the start message
-    buttons = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("• ᴍʏ ᴀʟʟ ᴄᴏᴍᴍᴀɴᴅs •", callback_data='help')
-        ],
-        [
-            InlineKeyboardButton('• ᴜᴘᴅᴀᴛᴇs', url='https://t.me/FILE_SHARINGBOTS'),
-            InlineKeyboardButton('sᴜᴘᴘᴏʀᴛ •', url='https://t.me/ahss_help_zone')
-        ],
-        [
-            InlineKeyboardButton('• ᴀʙᴏᴜᴛ• ', callback_data='about')
-        ]
-    ])
-
-    # Send start message with or without picture
-    if Config.START_PIC:
-        await message.reply_photo(
-            Config.START_PIC,
-            caption=Txt.START_TXT.format(user.mention),
-            reply_markup=buttons
-        )
-    else:
-        await message.reply_text(
-            text=Txt.START_TXT.format(user.mention),
-            reply_markup=buttons,
-            disable_web_page_preview=True
-        )
-
-# Help Command Handler
-@Client.on_message(filters.private & filters.command("help"))
-async def help_command(client, message):
-    bot = await client.get_me()
-    mention = bot.mention
-
     await message.reply_text(
-        text=Txt.HELP_TXT.format(mention=mention),
+        text=Txt.START_TXT.format(message.from_user.mention),
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("• ᴍʏ ᴀʟʟ ᴄᴏᴍᴍᴀɴᴅs •", callback_data='help')],
+            [InlineKeyboardButton('• ᴜᴘᴅᴀᴛᴇs', url='https://t.me/FILE_SHARINGBOTS'),
+             InlineKeyboardButton('sᴜᴘᴘᴏʀᴛ •', url='https://t.me/CodeflixSupport')],
+            [InlineKeyboardButton('• ᴀʙᴏᴜᴛ', callback_data='about'),
+             InlineKeyboardButton('sᴏᴜʀᴄᴇ •', callback_data='source')]
+        ])
+    )
+
+# Help command
+@app.on_message(filters.command("help") & filters.private)
+async def help_command(client, message):
+    logger.info(f"Help command received from user {message.from_user.id}")
+    await message.reply_text(
+        text=Txt.HELP_TXT.format((await client.get_me()).mention),
         disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("• ᴀᴜᴛᴏ ʀᴇɴᴀᴍᴇ ғᴏʀᴍᴀᴛ •", callback_data='file_names')],
-            [InlineKeyboardButton('• ᴛʜᴜᴍʙɴᴀɪʟ', callback_data='thumbnail'), InlineKeyboardButton('ᴄᴀᴘᴛɪᴏɴ •', callback_data='caption')],
-            [InlineKeyboardButton('• ᴍᴇᴛᴀᴅᴀᴛᴀ', callback_data='meta'), InlineKeyboardButton('ᴅᴏɴᴀᴛᴇ •', callback_data='donate')],
+            [InlineKeyboardButton('• ᴛʜᴜᴍʙɴᴀɪʟ', callback_data='thumbnail'),
+             InlineKeyboardButton('ᴄᴀᴘᴛɪᴏɴ •', callback_data='caption')],
+            [InlineKeyboardButton('• ᴍᴇᴛᴀᴅᴀᴛᴀ', callback_data='meta'),
+             InlineKeyboardButton('ᴅᴏɴᴀᴛᴇ •', callback_data='donate')],
             [InlineKeyboardButton('• ʜᴏᴍᴇ', callback_data='home')]
         ])
     )
 
-# Donation Command Handler
-@Client.on_message(filters.command("donate"))
-async def donation(client, message):
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton(text="ʙᴀᴄᴋ", callback_data="help"), InlineKeyboardButton(text="ᴏᴡɴᴇʀ", url='https://t.me/proobito')]
-    ])
-    yt = await message.reply_photo(photo='https://envs.sh/ZsI.png?DpE8x=1', caption=Txt.DONATE_TXT, reply_markup=buttons)
-    await asyncio.sleep(300)
-    await yt.delete()
-    await message.delete()
+# About command
+@app.on_message(filters.command("about") & filters.private)
+async def about_command(client, message):
+    logger.info(f"About command received from user {message.from_user.id}")
+    await message.reply_text(
+        text=Txt.ABOUT_TXT,
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("• sᴜᴘᴘᴏʀᴛ", url='https://t.me/ahss_help_zone'),
+             InlineKeyboardButton("ᴄᴏᴍᴍᴀɴᴅs •", callback_data="help")],
+            [InlineKeyboardButton("• ᴅᴇᴠᴇʟᴏᴘᴇʀ", url='https://t.me/cosmic_awaken'),
+             InlineKeyboardButton("ɴᴇᴛᴡᴏʀᴋ •", url='https://t.me/society_network')],
+            [InlineKeyboardButton("• ʙᴀᴄᴋ •", callback_data="home")]
+        ])
+    )
 
-# Premium Command Handler
-@Client.on_message(filters.command("premium"))
-async def getpremium(bot, message):
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("ᴏᴡɴᴇʀ", url="https://t.me/proobito"), InlineKeyboardButton("ᴄʟᴏsᴇ", callback_data="close")]
-    ])
-    yt = await message.reply_photo(photo='https://envs.sh/ZsI.png?DpE8x=1', caption=Txt.PREMIUM_TXT, reply_markup=buttons)
-    await asyncio.sleep(300)
-    await yt.delete()
-    await message.delete()
+# Extraction command
+@app.on_message(filters.command("extraction") & filters.private)
+async def extraction_command(client, message):
+    logger.info(f"Extraction command received from user {message.from_user.id}")
+    await message.reply_text(
+        text="➪ Please select an option to extract metadata from:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("ғɪʟᴇɴᴀᴍᴇ", callback_data="filename")],
+            [InlineKeyboardButton("ғɪʟᴇᴄᴀᴘᴛɪᴏɴ", callback_data="filecaption")]
+        ])
+    )
 
-# Plan Command Handler
-@Client.on_message(filters.command("plan"))
-async def premium(bot, message):
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("sᴇɴᴅ ss", url="https://t.me/proobito"), InlineKeyboardButton("ᴄʟᴏsᴇ", callback_data="close")]
-    ])
-    yt = await message.reply_photo(photo='https://envs.sh/ZsI.png?DpE8x=1', caption=Txt.PREPLANS_TXT, reply_markup=buttons)
-    await asyncio.sleep(300)
-    await yt.delete()
-    await message.delete()
-
-# Bought Command Handler
-@Client.on_message(filters.command("bought") & filters.private)
-async def bought(client, message):
-    msg = await message.reply('Wait im checking...')
-    replied = message.reply_to_message
-
-    if not replied:
-        await msg.edit("<b>Please reply with the screenshot of your payment for the premium purchase to proceed.\n\nFor example, first upload your screenshot, then reply to it using the '/bought' command</b>")
-    elif replied.photo:
-        await client.send_photo(
-            chat_id=Config.LOG_CHANNEL,
-            photo=replied.photo.file_id,
-            caption=f'<b>User - {message.from_user.mention}\nUser id - <code>{message.from_user.id}</code>\nUsername - <code>{message.from_user.username}</code>\nName - <code>{message.from_user.first_name}</code></b>',
+# Autorename command
+@app.on_message(filters.command("autorename") & filters.private)
+async def autorename_command(client, message):
+    logger.info(f"Autorename command received from user {message.from_user.id}")
+    if len(message.command) < 2:
+        await message.reply_text(
+            text=Txt.FILE_NAME_TXT.format(format_template=await db.get_format_template(message.from_user.id)),
+            disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Close", callback_data="close_data")]
+                [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close")]
             ])
         )
-        await msg.edit_text('<b>Your screenshot has been sent to Admins</b>')
-
-# Thumbnail Command Handler
-@Client.on_message(filters.private & filters.command("setthumbnail"))
-async def set_thumbnail(client, message):
-    user_id = message.from_user.id
-    if not message.reply_to_message or not message.reply_to_message.photo:
-        await message.reply_text("Please reply to a photo to set it as your thumbnail.")
-        return
-
-    thumbnail_id = message.reply_to_message.photo.file_id
-    await codeflixbots.set_thumbnail(user_id, thumbnail_id)
-    
-    # Log thumbnail setting activity
-    log_message = (
-        f"**Thumbnail Set**\n"
-        f"User: {message.from_user.mention} (`{user_id}`)\n"
-        f"Thumbnail ID: {thumbnail_id}"
-    )
-    try:
-        await client.send_message(Config.LOG_CHANNEL, log_message)
-        await client.send_photo(Config.DUMP_CHANNEL, thumbnail_id, caption=log_message)
-    except Exception as e:
-        logger.error(f"Error logging thumbnail for user {user_id}: {e}")
-
-    await message.reply_text("Thumbnail set successfully!")
-
-# Extraction Command Handler
-async def get_extraction_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Generate inline keyboard for /extraction with ✅ on selected mode."""
-    current_mode = await codeflixbots.get_rename_mode(user_id)
-    buttons = [
-        [
-            InlineKeyboardButton(
-                f"Filename {'✅' if current_mode == 'filename' else ''}",
-                callback_data="extraction_filename"
-            ),
-            InlineKeyboardButton(
-                f"Caption {'✅' if current_mode == 'caption' else ''}",
-                callback_data="extraction_caption"
+    else:
+        format_template = " ".join(message.command[1:])
+        try:
+            await db.set_format_template(message.from_user.id, format_template)
+            await message.reply_text(
+                f"➪ Autorename format set to:\n\n`{format_template}`\n\nSend a file to rename!"
             )
-        ]
-    ]
-    return InlineKeyboardMarkup(buttons)
+        except Exception as e:
+            logger.error(f"Error setting format template for user {message.from_user.id}: {e}")
+            await message.reply_text("➪ Error: Couldn't set the format template.")
 
-@Client.on_message(filters.command("extraction") & filters.private)
-async def extraction(client, message):
-    user_id = message.from_user.id
-    keyboard = await get_extraction_keyboard(user_id)
+# Thumbnail command
+@app.on_message(filters.command("thumbnail") & filters.private)
+async def thumbnail_command(client, message):
+    logger.info(f"Thumbnail command received from user {message.from_user.id}")
     await message.reply_text(
-        "Select rename mode:",
-        reply_markup=keyboard
+        text=Txt.THUMBNAIL_TXT,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close")]
+        ])
     )
-    logger.info(f"Displayed extraction keyboard for user {user_id}")
 
-@Client.on_callback_query(filters.regex(r"^extraction_"))
-async def extraction_callback(client, callback_query):
-    user_id = callback_query.from_user.id
-    mode = callback_query.data.split("_")[1]  # e.g., "filename" or "caption"
-    try:
-        await codeflixbots.set_rename_mode(user_id, mode)
-        keyboard = await get_extraction_keyboard(user_id)
-        await callback_query.message.edit_text(
-            f"Selected rename mode: {mode} ✅",
-            reply_markup=keyboard
+# Caption command
+@app.on_message(filters.command("caption") & filters.private)
+async def caption_command(client, message):
+    logger.info(f"Caption command received from user {message.from_user.id}")
+    if len(message.command) < 2:
+        await message.reply_text(
+            text=Txt.CAPTION_TXT,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close")]
+            ])
         )
-        # Log mode change activity
-        log_message = (
-            f"**Rename Mode Changed**\n"
-            f"User: {callback_query.from_user.mention} (`{user_id}`)\n"
-            f"New Mode: {mode}"
-        )
-        await client.send_message(Config.LOG_CHANNEL, log_message)
-        await client.send_message(Config.DUMP_CHANNEL, log_message)
-        await callback_query.answer(f"Set to {mode}")
-        logger.info(f"User {user_id} set rename_mode to {mode}")
-    except Exception as e:
-        await callback_query.answer("Error setting mode", show_alert=True)
-        logger.error(f"Error setting rename_mode for user {user_id}: {e}")
+    else:
+        caption = " ".join(message.command[1:])
+        try:
+            await db.set_caption(message.from_user.id, caption)
+            await message.reply_text(f"➪ Caption set to:\n\n`{caption}`")
+        except Exception as e:
+            logger.error(f"Error setting caption for user {message.from_user.id}: {e}")
+            await message.reply_text("➪ Error: Couldn't set the caption.")
 
-# Callback Query Handler
-@Client.on_callback_query()
-async def callback(client, query: CallbackQuery):
+# Metadata command
+@app.on_message(filters.command("metadata") & filters.private)
+async def metadata_command(client, message):
+    logger.info(f"Metadata command received from user {message.from_user.id}")
+    await message.reply_text(
+        text=Txt.SEND_METADATA,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close")]
+        ])
+    )
+
+# Callback query handler
+@app.on_callback_query()
+async def cb_handler(client, query: CallbackQuery):
     data = query.data
     user_id = query.from_user.id
 
-    if data == "home":
+    logger.info(f"Callback data received: {data}")
+
+    # Handle /extraction callbacks
+    if data in ["filename", "filecaption"]:
+        try:
+            choice = data
+            updated_keyboard = [
+                [InlineKeyboardButton("ғɪʟᴇɴᴀᴍᴇ ✅" if choice == "filename" else "ғɪʟᴇɴᴀᴍᴇ", callback_data="filename")],
+                [InlineKeyboardButton("ғɪʟᴇᴄᴀᴘᴛɪᴏɴ ✅" if choice == "filecaption" else "ғɪʟᴇᴄᴀᴘᴛɪᴏɴ", callback_data="filecaption")]
+            ]
+
+            try:
+                await query.message.edit_reply_markup(InlineKeyboardMarkup(updated_keyboard))
+                logger.info(f"Updated keyboard for user {user_id}")
+            except MessageNotModified:
+                logger.debug(f"Keyboard unchanged for user {user_id}")
+            except ChatAdminRequired:
+                logger.error(f"ChatAdminRequired for keyboard update")
+                await query.message.reply_text("Error: Bot lacks admin rights.")
+                await query.answer("Bot needs admin rights!", show_alert=True)
+                return
+            except Exception as e:
+                logger.error(f"Keyboard update failed for user {user_id}: {e}")
+                await query.message.reply_text("➪ Error: Couldn't update buttons.")
+                return
+
+            success = await db.set_user_choice(user_id, choice)
+            if not success:
+                logger.error(f"Failed to save choice '{choice}' for user {user_id}")
+                await query.message.reply_text("➪ Error: Couldn't save your choice.")
+                await query.answer("Database error!", show_alert=True)
+                return
+
+            await query.message.reply_text(
+                f"Please send the file to rename using its {choice}."
+            )
+            await query.answer("Option selected!")
+        except ChatAdminRequired:
+            logger.error(f"ChatAdminRequired in callback")
+            await query.message.reply_text("Error: Bot lacks admin rights.")
+            await query.answer("Bot needs admin rights!", show_alert=True)
+        except Exception as e:
+            logger.error(f"Callback error for user {user_id}: {e}")
+            await query.message.reply_text("➪ Error: Something went wrong.")
+            await query.answer("Error occurred!", show_alert=True)
+
+    # Handle other callbacks
+    elif data == "home":
         await query.message.edit_text(
             text=Txt.START_TXT.format(query.from_user.mention),
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("• ᴍʏ ᴀʟʟ ᴄᴏᴍᴍᴀɴᴅs •", callback_data='help')],
-                [InlineKeyboardButton('• ᴜᴘᴅᴀᴛᴇs', url='https://t.me/FILE_SHARINGBOTS'), InlineKeyboardButton('sᴜᴘᴘᴏʀᴛ •', url='https://t.me/CodeflixSupport')],
-                [InlineKeyboardButton('• ᴀʙᴏᴜᴛ', callback_data='about'), InlineKeyboardButton('sᴏᴜʀᴄᴇ •', callback_data='source')]
+                [InlineKeyboardButton('• ᴜᴘᴅᴀᴛᴇs', url='https://t.me/FILE_SHARINGBOTS'),
+                 InlineKeyboardButton('sᴜᴘᴘᴏʀᴛ •', url='https://t.me/CodeflixSupport')],
+                [InlineKeyboardButton('• ᴀʙᴏᴜᴛ', callback_data='about'),
+                 InlineKeyboardButton('sᴏᴜʀᴄᴇ •', callback_data='source')]
             ])
         )
     elif data == "caption":
@@ -231,7 +222,8 @@ async def callback(client, query: CallbackQuery):
             text=Txt.CAPTION_TXT,
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("• sᴜᴘᴘᴏʀᴛ", url='https://t.me/ahss_help_zone'), InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="help")]
+                [InlineKeyboardButton("• sᴜᴘᴘᴏʀᴛ", url='https://t.me/ahss_help_zone'),
+                 InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="help")]
             ])
         )
     elif data == "help":
@@ -240,8 +232,10 @@ async def callback(client, query: CallbackQuery):
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("• ᴀᴜᴛᴏ ʀᴇɴᴀᴍᴇ ғᴏʀᴍᴀᴛ •", callback_data='file_names')],
-                [InlineKeyboardButton('• ᴛʜᴜᴍʙɴᴀɪʟ', callback_data='thumbnail'), InlineKeyboardButton('ᴄᴀᴘᴛɪᴏɴ •', callback_data='caption')],
-                [InlineKeyboardButton('• ᴍᴇᴛᴀᴅᴀᴛᴀ', callback_data='meta'), InlineKeyboardButton('ᴅᴏɴᴀᴛᴇ •', callback_data='donate')],
+                [InlineKeyboardButton('• ᴛʜᴜᴍʙɴᴀɪʟ', callback_data='thumbnail'),
+                 InlineKeyboardButton('ᴄᴀᴘᴛɪᴏɴ •', callback_data='caption')],
+                [InlineKeyboardButton('• ᴍᴇᴛᴀᴅᴀᴛᴀ', callback_data='meta'),
+                 InlineKeyboardButton('ᴅᴏɴᴀᴛᴇ •', callback_data='donate')],
                 [InlineKeyboardButton('• ʜᴏᴍᴇ', callback_data='home')]
             ])
         )
@@ -249,7 +243,8 @@ async def callback(client, query: CallbackQuery):
         await query.message.edit_text(
             text=Txt.SEND_METADATA,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close"), InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="help")]
+                [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close"),
+                 InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="help")]
             ])
         )
     elif data == "donate":
@@ -257,7 +252,8 @@ async def callback(client, query: CallbackQuery):
             text=Txt.DONATE_TXT,
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("• ʙᴀᴄᴋ", callback_data="help"), InlineKeyboardButton("ᴏᴡɴᴇʀ •", url='https://t.me/i_killed_my_clan')]
+                [InlineKeyboardButton("• ʙᴀᴄᴋ", callback_data="help"),
+                 InlineKeyboardButton("ᴏᴡɴᴇʀ •", url='https://t.me/i_killed_my_clan')]
             ])
         )
     elif data == "file_names":
@@ -266,42 +262,48 @@ async def callback(client, query: CallbackQuery):
             text=Txt.FILE_NAME_TXT.format(format_template=format_template),
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close"), InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="help")]
+                [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close"),
+                 InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="help")]
             ])
         )
     elif data == "thumbnail":
         await query.message.edit_caption(
             caption=Txt.THUMBNAIL_TXT,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close"), InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="help")]
+                [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close"),
+                 InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="help")]
             ])
         )
-    elif data == "metadata":
+    elif data == "metadatax":
         await query.message.edit_caption(
             caption=Txt.SEND_METADATA,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close"), InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="help")]
+                [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close"),
+                 InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="help")]
             ])
         )
     elif data == "source":
         await query.message.edit_caption(
             caption=Txt.SOURCE_TXT,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close"), InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="home")]
+                [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close"),
+                 InlineKeyboardButton("ʙᴀᴄᴋ •", callback_data="home")]
             ])
         )
     elif data == "premiumx":
         await query.message.edit_caption(
             caption=Txt.PREMIUM_TXT,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("• ʙᴀᴄᴋ", callback_data="help"), InlineKeyboardButton("ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ •", url='https://t.me/proobito')]
+                [InlineKeyboardButton("• ʙᴀᴄᴋ", callback_data="help"),
+                 InlineKeyboardButton("ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ •", url='https://t.me/proobito')]
             ])
         )
     elif data == "plans":
         await query.message.edit_caption(
             caption=Txt.PREPLANS_TXT,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close"), InlineKeyboardButton("ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ •", url='https://t.me/proobito')]
+                [InlineKeyboardButton("• ᴄʟᴏsᴇ", callback_data="close"),
+                 InlineKeyboardButton("ʙᴜʏ ᴘʀᴇᴍɪᴜᴍ •", url='https://t.me/proobito')]
             ])
         )
     elif data == "about":
@@ -309,8 +311,10 @@ async def callback(client, query: CallbackQuery):
             text=Txt.ABOUT_TXT,
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("• sᴜᴘᴘᴏʀᴛ", url='https://t.me/ahss_help_zone'), InlineKeyboardButton("ᴄᴏᴍᴍᴀɴᴅs •", callback_data="help")],
-                [InlineKeyboardButton("• ᴅᴇᴠᴇʟᴏᴘᴇʀ", url='https://t.me/cosmic_awaken'), InlineKeyboardButton("ɴᴇᴛᴡᴏʀᴋ •", url='https://t.me/society_network')],
+                [InlineKeyboardButton("• sᴜᴘᴘᴏʀᴛ", url='https://t.me/ahss_help_zone'),
+                 InlineKeyboardButton("ᴄᴏᴍᴍᴀɴᴅs •", callback_data="help")],
+                [InlineKeyboardButton("• ᴅᴇᴠᴇʟᴏᴘᴇʀ", url='https://t.me/cosmic_awaken'),
+                 InlineKeyboardButton("ɴᴇᴛᴡᴏʀᴋ •", url='https://t.me/society_network')],
                 [InlineKeyboardButton("• ʙᴀᴄᴋ •", callback_data="home")]
             ])
         )
@@ -318,5 +322,12 @@ async def callback(client, query: CallbackQuery):
         try:
             await query.message.delete()
             await query.message.reply_to_message.delete()
+            await query.message.continue_propagation()
         except:
             await query.message.delete()
+            await query.message.continue_propagation()
+
+# Run the bot
+if __name__ == "__main__":
+    logger.info("Starting Tessia Bot...")
+    app.run()
